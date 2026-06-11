@@ -1,8 +1,17 @@
 import { Alert, Box, Card, CardContent, Chip, Grid, LinearProgress, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import DnsOutlinedIcon from '@mui/icons-material/DnsOutlined';
+import WorkspacesOutlinedIcon from '@mui/icons-material/WorkspacesOutlined';
+import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
+import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
+import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import { useNavigate } from 'react-router';
 import { useNodeMetrics, useOverview } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { AgeCell } from '../components/AgeCell.js';
+import { EmptyState } from '../components/EmptyState.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { formatBytes, formatCpu } from '../components/Sparkline.js';
 
@@ -11,14 +20,11 @@ export function OverviewPage() {
 
   if (selected.length === 0) {
     return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, flexDirection: 'column', gap: 1 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          ⎈ Kubedeck
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Select one or more clusters in the top bar to get started.
-        </Typography>
-      </Box>
+      <EmptyState
+        icon={<HubOutlinedIcon />}
+        title="Welcome to Kubedeck"
+        subtitle="Select one or more clusters in the top bar to get started."
+      />
     );
   }
 
@@ -38,20 +44,39 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
 
   return (
     <Box>
-      <Typography variant="h6" sx={{ mb: 1 }}>
-        {ctx}
-      </Typography>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+        <HubOutlinedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
+        <Typography variant="h6">{ctx}</Typography>
+      </Stack>
       {isLoading && <LinearProgress />}
       {error && <Alert severity="error">{error.message}</Alert>}
       {data && (
         <>
           <Grid container spacing={1.5} sx={{ mb: 2 }}>
-            <StatCard label="Nodes" value={data.counts.nodes} />
-            <StatCard label="Namespaces" value={data.counts.namespaces} />
-            <StatCard label="Pods" value={`${data.counts.podsRunning}/${data.counts.pods}`} sub="running" warn={data.counts.podsRunning < data.counts.pods} />
-            <StatCard label="Deployments" value={data.counts.deployments} />
-            <StatCard label="Failing pods" value={data.failingPods.length} warn={data.failingPods.length > 0} onClick={() => navigate('/r/core/v1/pods')} />
-            <StatCard label="Warnings (1h)" value={data.warningEvents.length} warn={data.warningEvents.length > 0} onClick={() => navigate('/r/core/v1/events')} />
+            <StatCard label="Nodes" value={data.counts.nodes} icon={<DnsOutlinedIcon />} />
+            <StatCard label="Namespaces" value={data.counts.namespaces} icon={<WorkspacesOutlinedIcon />} />
+            <StatCard
+              label="Pods"
+              value={`${data.counts.podsRunning}/${data.counts.pods}`}
+              sub="running"
+              warn={data.counts.podsRunning < data.counts.pods}
+              icon={<ViewInArOutlinedIcon />}
+            />
+            <StatCard label="Deployments" value={data.counts.deployments} icon={<RocketLaunchOutlinedIcon />} />
+            <StatCard
+              label="Failing pods"
+              value={data.failingPods.length}
+              warn={data.failingPods.length > 0}
+              icon={<ErrorOutlineIcon />}
+              onClick={() => navigate('/r/core/v1/pods')}
+            />
+            <StatCard
+              label="Warnings (1h)"
+              value={data.warningEvents.length}
+              warn={data.warningEvents.length > 0}
+              icon={<WarningAmberOutlinedIcon />}
+              onClick={() => navigate('/r/core/v1/events')}
+            />
           </Grid>
 
           {nodeMetrics?.available && nodeMetrics.items.length > 0 && (
@@ -137,11 +162,18 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
               <Stack spacing={0.5}>
                 {data.warningEvents.slice(0, 15).map((e, i) => (
                   <Typography key={i} variant="body2">
+                    <Typography component="span" variant="body2" sx={{ color: 'warning.main', fontWeight: 600 }}>
+                      {e.reason}
+                    </Typography>
+                    {e.count > 1 && (
+                      <Typography component="span" variant="caption" sx={{ fontWeight: 600 }}>
+                        {' '}({e.count}x)
+                      </Typography>
+                    )}{' '}
                     <Typography component="span" variant="caption" color="text.secondary">
-                      <AgeCell timestamp={e.lastTimestamp} />
+                      <AgeCell timestamp={e.lastTimestamp} /> ago
                     </Typography>{' '}
-                    <b>{e.reason}</b> {e.involvedKind}/{e.namespace ? `${e.namespace}/` : ''}{e.involvedName} — {e.message}
-                    {e.count > 1 ? ` (×${e.count})` : ''}
+                    — {e.involvedKind}/{e.namespace ? `${e.namespace}/` : ''}{e.involvedName}: {e.message}
                   </Typography>
                 ))}
               </Stack>
@@ -159,22 +191,74 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
   );
 }
 
-function StatCard({ label, value, sub, warn, onClick }: { label: string; value: number | string; sub?: string; warn?: boolean; onClick?: () => void }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  warn,
+  icon,
+  onClick,
+}: {
+  label: string;
+  value: number | string;
+  sub?: string;
+  warn?: boolean;
+  icon?: React.ReactElement;
+  onClick?: () => void;
+}) {
   return (
     <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-      <Card variant="outlined" sx={{ cursor: onClick ? 'pointer' : 'default', borderColor: warn ? 'warning.main' : undefined }} onClick={onClick}>
-        <CardContent sx={{ py: '12px !important' }}>
-          <Typography variant="caption" color="text.secondary">
-            {label}
-          </Typography>
-          <Typography variant="h5" color={warn ? 'warning.main' : undefined}>
-            {value}
-            {sub && (
-              <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
-                {sub}
-              </Typography>
-            )}
-          </Typography>
+      <Card
+        variant="outlined"
+        onClick={onClick}
+        sx={(theme) => ({
+          height: '100%',
+          cursor: onClick ? 'pointer' : 'default',
+          borderColor: warn ? 'warning.main' : undefined,
+          transition: 'border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease',
+          ...(onClick && {
+            '&:hover': {
+              borderColor: warn ? 'warning.main' : 'primary.main',
+              transform: 'translateY(-1px)',
+              boxShadow: `0 4px 14px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.35 : 0.08)}`,
+            },
+          }),
+        })}
+      >
+        <CardContent sx={{ py: '12px !important', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          {icon && (
+            <Box
+              sx={(theme) => {
+                const main = warn ? theme.palette.warning.main : theme.palette.primary.main;
+                return {
+                  width: 36,
+                  height: 36,
+                  borderRadius: 2,
+                  flexShrink: 0,
+                  display: 'grid',
+                  placeItems: 'center',
+                  color: main,
+                  bgcolor: alpha(main, theme.palette.mode === 'dark' ? 0.14 : 0.08),
+                  '& svg': { fontSize: 20 },
+                };
+              }}
+            >
+              {icon}
+            </Box>
+          )}
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+              {label}
+            </Typography>
+            <Typography variant="h6" color={warn ? 'warning.main' : undefined} noWrap>
+              {value}
+              {sub && (
+                <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                  {sub}
+                </Typography>
+              )}
+            </Typography>
+          </Box>
         </CardContent>
       </Card>
     </Grid>

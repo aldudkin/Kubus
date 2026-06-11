@@ -26,7 +26,20 @@ export function BottomDock() {
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', borderTop: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
-      <Box onMouseDown={startResize} sx={{ height: 4, cursor: 'row-resize', flexShrink: 0, '&:hover': { bgcolor: 'primary.main' } }} />
+      <Box
+        onMouseDown={startResize}
+        sx={{
+          height: 6,
+          cursor: 'row-resize',
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          '&:hover .grip, &:active .grip': { bgcolor: 'primary.main', width: 56 },
+        }}
+      >
+        <Box className="grip" sx={{ width: 36, height: 3, borderRadius: 2, bgcolor: 'divider', transition: 'all 120ms ease' }} />
+      </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}>
         <Tabs value={activeId ?? false} onChange={(_e, v) => setActive(v as string)} variant="scrollable" sx={{ minHeight: 32, flex: 1 }}>
           {tabs.map((tab) => (

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Box, Chip, Stack, TextField, Typography } from '@mui/material';
+import { Box, Chip, InputAdornment, Stack, TextField, Typography } from '@mui/material';
+import SearchIcon from '@mui/icons-material/Search';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import type { ClusterRow } from '../api/queries.js';
 
@@ -33,7 +34,21 @@ export function ResourceTable({ rows, columns, loading, statusText, onRowClick, 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1.5, py: 1, flexShrink: 0 }}>
-        <TextField placeholder="Search…" value={filter} onChange={(e) => setFilter(e.target.value)} sx={{ width: 240 }} />
+        <TextField
+          placeholder="Search…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          sx={{ width: 240 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon sx={{ fontSize: 18 }} />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
         <Chip label={`${filtered.length} items`} variant="outlined" />
         {statusText && (
           <Typography variant="caption" color="warning.main">

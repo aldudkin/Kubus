@@ -1,6 +1,6 @@
-import { AppBar, Box, IconButton, Toolbar, Tooltip, Typography } from '@mui/material';
-import DarkModeIcon from '@mui/icons-material/DarkMode';
-import LightModeIcon from '@mui/icons-material/LightMode';
+import { AppBar, Box, IconButton, Stack, Toolbar, Tooltip, Typography } from '@mui/material';
+import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
+import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore } from '../state/dock.js';
@@ -13,23 +13,42 @@ export function TopBar() {
   const dock = useDockStore();
 
   return (
-    <AppBar position="static" color="default" sx={{ borderBottom: 1, borderColor: 'divider' }}>
-      <Toolbar variant="dense" sx={{ gap: 2 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700, letterSpacing: -0.5 }}>
-          ⎈ Kubedeck
-        </Typography>
+    <AppBar position="static" color="transparent" sx={{ borderBottom: 1, borderColor: 'divider' }}>
+      <Toolbar variant="dense" sx={{ gap: 1.5, minHeight: 52 }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mr: 1.5 }}>
+          <Box
+            sx={{
+              width: 28,
+              height: 28,
+              borderRadius: 2,
+              display: 'grid',
+              placeItems: 'center',
+              color: '#fff',
+              fontSize: 18,
+              lineHeight: 1,
+              background: 'linear-gradient(135deg, #6d8dfa 0%, #3b5bdb 100%)',
+            }}
+          >
+            ⎈
+          </Box>
+          <Typography variant="h6" sx={{ fontWeight: 700, letterSpacing: -0.4 }}>
+            Kubedeck
+          </Typography>
+        </Stack>
         <ClusterSwitcher />
         <NamespaceFilter />
         <Box sx={{ flex: 1 }} />
         {dock.tabs.length > 0 && (
           <Tooltip title={dock.open ? 'Hide dock' : `Show dock (${dock.tabs.length} tabs)`}>
-            <IconButton onClick={() => dock.setOpen(!dock.open)} color={dock.open ? 'primary' : 'default'}>
-              <TerminalIcon />
+            <IconButton size="small" onClick={() => dock.setOpen(!dock.open)} color={dock.open ? 'primary' : 'default'}>
+              <TerminalIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         )}
-        <Tooltip title="Toggle theme">
-          <IconButton onClick={toggleTheme}>{mode === 'dark' ? <LightModeIcon /> : <DarkModeIcon />}</IconButton>
+        <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+          <IconButton size="small" onClick={toggleTheme}>
+            {mode === 'dark' ? <LightModeOutlinedIcon fontSize="small" /> : <DarkModeOutlinedIcon fontSize="small" />}
+          </IconButton>
         </Tooltip>
       </Toolbar>
     </AppBar>

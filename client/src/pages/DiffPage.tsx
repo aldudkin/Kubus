@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
 import { Autocomplete, Box, FormControlLabel, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
+import DifferenceOutlinedIcon from '@mui/icons-material/DifferenceOutlined';
 import { useQuery } from '@tanstack/react-query';
 import yaml from 'js-yaml';
 import { groupToPath, type KubeObject, type ListResponse, type ResourceKindInfo } from '@kubedeck/shared';
 import { apiFetch } from '../api/http.js';
 import { resourceUrl, useApiResources, useContexts, useNamespaces } from '../api/queries.js';
 import { DiffViewer } from '../components/DiffViewer.js';
+import { PageHeader } from '../components/PageHeader.js';
 import { normalizeForDiff } from '../kube-display.js';
 
 interface Side {
@@ -52,14 +54,13 @@ export function DiffPage() {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5 }}>
-      <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
-        <Typography variant="h6">Resource Diff</Typography>
+      <PageHeader title="Resource Diff" icon={<DifferenceOutlinedIcon />}>
         <Box sx={{ flex: 1 }} />
         <FormControlLabel
           control={<Switch size="small" checked={normalize} onChange={(e) => setNormalize(e.target.checked)} />}
           label={<Typography variant="body2">Ignore status & server-set metadata</Typography>}
         />
-      </Stack>
+      </PageHeader>
       <Grid container spacing={2} sx={{ mb: 1 }}>
         <Grid size={6}>
           <SidePicker label="Left" side={left} onChange={setLeft} />
@@ -68,7 +69,7 @@ export function DiffPage() {
           <SidePicker label="Right" side={right} onChange={setRight} />
         </Grid>
       </Grid>
-      <Box sx={{ flex: 1, minHeight: 0, border: 1, borderColor: 'divider' }}>
+      <Box sx={{ flex: 1, minHeight: 0, border: 1, borderColor: 'divider', borderRadius: 2, overflow: 'hidden' }}>
         {leftText && rightText ? (
           <DiffViewer left={leftText} right={rightText} />
         ) : (

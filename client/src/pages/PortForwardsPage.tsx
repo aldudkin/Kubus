@@ -1,10 +1,13 @@
-import { Box, Chip, IconButton, Link, Tooltip, Typography } from '@mui/material';
+import { Box, Chip, IconButton, Link, Tooltip } from '@mui/material';
 import StopIcon from '@mui/icons-material/Stop';
+import CableOutlinedIcon from '@mui/icons-material/CableOutlined';
 import type { GridColDef } from '@mui/x-data-grid';
 import { DataGrid } from '@mui/x-data-grid';
 import type { PortForwardInfo } from '@kubedeck/shared';
 import { usePortForwards, useStopPortForward } from '../api/queries.js';
 import { StatusChip } from '../components/StatusChip.js';
+import { EmptyState } from '../components/EmptyState.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 export function PortForwardsPage() {
   const { data, isLoading } = usePortForwards();
@@ -55,14 +58,15 @@ export function PortForwardsPage() {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-        <Typography variant="h6">Port Forwards</Typography>
+      <PageHeader title="Port Forwards" icon={<CableOutlinedIcon />}>
         <Chip label={`${data?.length ?? 0} active`} variant="outlined" />
-      </Box>
+      </PageHeader>
       {(data?.length ?? 0) === 0 && !isLoading ? (
-        <Typography color="text.secondary" sx={{ p: 2 }}>
-          No active forwards. Start one from a Pod or Service row menu (⋮ → Port forward).
-        </Typography>
+        <EmptyState
+          icon={<CableOutlinedIcon />}
+          title="No active forwards"
+          subtitle="Start one from a Pod or Service row menu (⋮ → Port forward)."
+        />
       ) : (
         <DataGrid rows={data ?? []} columns={columns} loading={isLoading} getRowId={(r) => r.id} density="compact" sx={{ border: 0 }} />
       )}

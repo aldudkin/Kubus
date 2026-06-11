@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box, Chip } from '@mui/material';
+import SailingOutlinedIcon from '@mui/icons-material/SailingOutlined';
 import { useNavigate } from 'react-router';
 import type { GridColDef } from '@mui/x-data-grid';
 import { DataGrid } from '@mui/x-data-grid';
@@ -8,6 +9,8 @@ import { useHelmReleases } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { AgeCell } from '../components/AgeCell.js';
+import { EmptyState } from '../components/EmptyState.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 interface Row {
   ctx: string;
@@ -52,17 +55,15 @@ export function HelmPage() {
 
   if (selected.length === 0) {
     return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-        <Typography color="text.secondary">Select a cluster to view Helm releases.</Typography>
-      </Box>
+      <EmptyState icon={<SailingOutlinedIcon />} title="No cluster selected" subtitle="Select a cluster to view Helm releases." />
     );
   }
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5, pt: 1.5 }}>
-      <Typography variant="h6" sx={{ mb: 1 }}>
-        Helm Releases
-      </Typography>
+      <PageHeader title="Helm Releases" icon={<SailingOutlinedIcon />}>
+        <Chip label={`${rows.length} releases`} variant="outlined" />
+      </PageHeader>
       <DataGrid
         rows={rows}
         columns={columns}

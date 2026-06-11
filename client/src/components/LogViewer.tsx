@@ -148,7 +148,7 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
       <Box
         ref={scrollRef}
         onScroll={onScroll}
-        sx={{ flex: 1, overflow: 'auto', fontFamily: '"JetBrains Mono", monospace', fontSize: 12, bgcolor: '#16161e', color: '#c0caf5' }}
+        sx={{ flex: 1, overflow: 'auto', fontFamily: '"JetBrains Mono", monospace', fontSize: 12, bgcolor: '#151518', color: '#d4d4da' }}
       >
         <Box sx={{ height: visible.length * ROW_HEIGHT, position: 'relative' }}>
           {visible.slice(start, end).map((l, i) => {

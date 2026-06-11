@@ -1,4 +1,5 @@
-import { Chip } from '@mui/material';
+import { Box } from '@mui/material';
+import CircleIcon from '@mui/icons-material/Circle';
 
 const GOOD = new Set(['Running', 'Succeeded', 'Active', 'Bound', 'Ready', 'Available', 'Completed', 'deployed', 'True']);
 const BAD = new Set(['Failed', 'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'Error', 'Evicted', 'Lost', 'NotReady', 'failed', 'OOMKilled']);
@@ -13,5 +14,22 @@ export function statusColor(status: string): 'success' | 'error' | 'warning' | '
 
 export function StatusChip({ status }: { status: string }) {
   if (!status) return null;
-  return <Chip label={status} color={statusColor(status)} variant="outlined" sx={{ height: 20, fontSize: 11 }} />;
+  const color = statusColor(status);
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 0.75,
+        fontSize: 12.5,
+        fontWeight: 550,
+        lineHeight: 1.6,
+        color: color === 'default' ? 'text.secondary' : `${color}.main`,
+      }}
+    >
+      <CircleIcon sx={{ fontSize: 7, opacity: color === 'default' ? 0.6 : 1 }} />
+      {status}
+    </Box>
+  );
 }

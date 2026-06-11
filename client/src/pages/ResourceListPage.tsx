@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SubjectIcon from '@mui/icons-material/Subject';
+import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import { useParams, useSearchParams } from 'react-router';
 import { columnsForKind, groupFromPath, type ResourceKindInfo } from '@kubedeck/shared';
 import { useApiResources, useCreateResource, useFilteredList, usePodMetrics, type ClusterRow } from '../api/queries.js';
@@ -12,6 +13,7 @@ import { buildColumns, makeMetricsLookup } from '../components/columns.js';
 import { ResourceDetailDrawer, type ResourceSelection } from '../components/ResourceDetailDrawer.js';
 import { RowActions } from '../components/RowActions.js';
 import { YamlEditor } from '../components/YamlEditor.js';
+import { EmptyState } from '../components/EmptyState.js';
 
 export function ResourceListPage() {
   const params = useParams<{ group: string; version: string; plural: string }>();
@@ -65,14 +67,11 @@ export function ResourceListPage() {
 
   if (selected.length === 0) {
     return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, flexDirection: 'column', gap: 1 }}>
-        <Typography variant="h6" color="text.secondary">
-          No cluster selected
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Pick one or more clusters from the switcher in the top bar.
-        </Typography>
-      </Box>
+      <EmptyState
+        icon={<HubOutlinedIcon />}
+        title="No cluster selected"
+        subtitle="Pick one or more clusters from the switcher in the top bar."
+      />
     );
   }
 
@@ -81,7 +80,7 @@ export function ResourceListPage() {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
-        <Typography variant="h6">{kind}s</Typography>
+        <Typography variant="h6">{kind === 'Endpoints' ? kind : `${kind}s`}</Typography>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
             {ctx}: {s.message ?? 'watch error'}

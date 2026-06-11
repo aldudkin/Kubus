@@ -56,18 +56,25 @@ export function ResourceDetailDrawer({ sel, onClose }: Props) {
         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
           <Stack direction="row" alignItems="center" sx={{ px: 2, py: 1, borderBottom: 1, borderColor: 'divider' }}>
             <Box sx={{ minWidth: 0 }}>
-              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600 }}>
-                {sel.name}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {sel.kind}
-                {sel.namespace ? ` · ${sel.namespace}` : ''} · {sel.ctx}
+              <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                {sel.ctx} ·{' '}
+                <Typography component="span" variant="caption" color="primary.main" sx={{ fontWeight: 600 }}>
+                  {sel.kind}
+                </Typography>
                 {obj && (
                   <>
                     {' · '}
                     <AgeCell timestamp={obj.metadata.creationTimestamp} /> old
                   </>
                 )}
+              </Typography>
+              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 650, lineHeight: 1.3 }}>
+                {sel.namespace && (
+                  <Typography component="span" variant="subtitle1" color="text.secondary" sx={{ fontWeight: 500 }}>
+                    {sel.namespace}{' / '}
+                  </Typography>
+                )}
+                {sel.name}
               </Typography>
             </Box>
             <Box sx={{ flex: 1 }} />
