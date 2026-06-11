@@ -1,0 +1,153 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import type { KubeObject, RolloutRestartRequest } from '@kubedeck/shared';
+import type { ClusterHandle } from './cluster-manager.js';
+import { resourcePath } from './raw-client.js';
+import { HttpProblem } from '../util/errors.js';
+
+const KIND_TO_PLURAL: Record<RolloutRestartRequest['kind'], string> = {
+  Deployment: 'deployments',
+  StatefulSet: 'statefulsets',
+  DaemonSet: 'daemonsets',
+};
+
+export async function scaleResource(handle: ClusterHandle, group: string, version: string, plural: string, namespace: string, name: string, replicas: number): Promise<void> {
+  const path = resourcePath(group, version, plural, { namespace, name, subresource: 'scale' });
+  await handle.raw.json(path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/merge-patch+json' },
+    body: JSON.stringify({ spec: { replicas } }),
+  });
+}
+
+export async function rolloutRestart(handle: ClusterHandle, kind: RolloutRestartRequest['kind'], namespace: string, name: string): Promise<void> {
+  const path = resourcePath('apps', 'v1', KIND_TO_PLURAL[kind], { namespace, name });
+  const patch = {
+    spec: {
+      template: {
+        metadata: {
+          annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() },
+        },
+      },
+    },
+  };
+  await handle.raw.json(path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/strategic-merge-patch+json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function setCordon(handle: ClusterHandle, node: string, unschedulable: boolean): Promise<void> {
+  await handle.raw.json(resourcePath('', 'v1', 'nodes', { name: node }), {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/merge-patch+json' },
+    body: JSON.stringify({ spec: { unschedulable } }),
+  });
+}
+
+export async function triggerCronJob(handle: ClusterHandle, namespace: string, name: string): Promise<{ jobName: string }> {
+  const cj = await handle.batch.readNamespacedCronJob({ name, namespace });
+  const jobTemplate = cj.spec?.jobTemplate;
+  if (!jobTemplate) throw new HttpProblem(422, 'cronjob has no jobTemplate');
+  const jobName = `${name}-manual-${Math.floor(Date.now() / 1000)}`.slice(0, 63);
+  await handle.batch.createNamespacedJob({
+    namespace,
+    body: {
+      apiVersion: 'batch/v1',
+      kind: 'Job',
+      metadata: {
+        name: jobName,
+        namespace,
+        annotations: { 'cronjob.kubernetes.io/instantiate': 'manual' },
+        labels: jobTemplate.metadata?.labels,
+        ownerReferences: [
+          {
+            apiVersion: 'batch/v1',
+            kind: 'CronJob',
+            name,
+            uid: cj.metadata!.uid!,
+            controller: false,
+          },
+        ],
+      },
+      spec: jobTemplate.spec,
+    },
+  });
+  return { jobName };
+}
+
+export interface DrainProgress {
+  evicted: number;
+  total: number;
+  current?: string;
+  done?: boolean;
+  error?: string;
+}
+
+/**
+ * Cordon a node and evict all non-DaemonSet, non-mirror pods via the
+ * Eviction API. PDB-blocked evictions (429) are retried for up to ~2 min
+ * per pod. Reports progress through the callback; resolves when done.
+ */
+export async function drainNode(handle: ClusterHandle, node: string, opts: { gracePeriodSeconds?: number; force?: boolean }, onProgress: (p: DrainProgress) => void): Promise<void> {
+  await setCordon(handle, node, true);
+  const podList = await handle.core.listPodForAllNamespaces({
+    fieldSelector: `spec.nodeName=${node}`,
+  });
+  const targets = podList.items.filter((pod) => {
+    const owners = pod.metadata?.ownerReferences ?? [];
+    if (owners.some((o) => o.kind === 'DaemonSet' && o.controller)) return false;
+    if (pod.metadata?.annotations?.['kubernetes.io/config.mirror']) return false;
+    if (pod.status?.phase === 'Succeeded' || pod.status?.phase === 'Failed') return false;
+    return true;
+  });
+
+  const total = targets.length;
+  let evicted = 0;
+  onProgress({ evicted, total });
+
+  for (const pod of targets) {
+    const ns = pod.metadata!.namespace!;
+    const podName = pod.metadata!.name!;
+    onProgress({ evicted, total, current: `${ns}/${podName}` });
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      try {
+        await handle.raw.json(`/api/v1/namespaces/${encodeURIComponent(ns)}/pods/${encodeURIComponent(podName)}/eviction`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            apiVersion: 'policy/v1',
+            kind: 'Eviction',
+            metadata: { name: podName, namespace: ns },
+            deleteOptions: opts.gracePeriodSeconds !== undefined ? { gracePeriodSeconds: opts.gracePeriodSeconds } : undefined,
+          }),
+        });
+        evicted++;
+        onProgress({ evicted, total });
+        break;
+      } catch (err) {
+        const code = (err as { code?: number }).code;
+        if (code === 404) {
+          // already gone
+          evicted++;
+          onProgress({ evicted, total });
+          break;
+        }
+        if (code === 429 && Date.now() < deadline) {
+          // blocked by PodDisruptionBudget — wait and retry
+          await delay(5000);
+          continue;
+        }
+        throw new HttpProblem(code && code >= 400 && code < 600 ? code : 500, `failed to evict ${ns}/${podName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  onProgress({ evicted, total, done: true });
+}
+
+/** Resolve a pod's containers (for log/exec container pickers). */
+export function podContainers(pod: KubeObject): string[] {
+  const spec = pod.spec as { containers?: Array<{ name: string }>; initContainers?: Array<{ name: string }> } | undefined;
+  return [...(spec?.containers ?? []), ...(spec?.initContainers ?? [])].map((c) => c.name);
+}

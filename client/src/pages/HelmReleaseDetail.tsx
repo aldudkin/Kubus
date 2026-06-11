@@ -1,0 +1,130 @@
+import { useMemo, useState } from 'react';
+import { Alert, Box, Breadcrumbs, Button, Chip, Link, Snackbar, Stack, Tab, Table, TableBody, TableCell, TableHead, TableRow, Tabs, Typography } from '@mui/material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import { useNavigate, useParams } from 'react-router';
+import yaml from 'js-yaml';
+import { useHelmHistory, useHelmRelease, useHelmUninstall } from '../api/queries.js';
+import { YamlEditor } from '../components/YamlEditor.js';
+import { StatusChip } from '../components/StatusChip.js';
+import { AgeCell } from '../components/AgeCell.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
+
+export function HelmReleaseDetailPage() {
+  const { ctx, ns, name } = useParams<{ ctx: string; ns: string; name: string }>();
+  const { data: release, isLoading, error } = useHelmRelease(ctx, ns, name);
+  const { data: history } = useHelmHistory(ctx, ns, name);
+  const uninstall = useHelmUninstall();
+  const navigate = useNavigate();
+  const [tab, setTab] = useState('values');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [toast, setToast] = useState<string>();
+
+  const valuesYaml = useMemo(() => (release ? yaml.dump(release.values ?? {}, { noRefs: true }) : ''), [release]);
+  const computedYaml = useMemo(() => (release ? yaml.dump(release.computedValues ?? {}, { noRefs: true }) : ''), [release]);
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 2 }}>
+      <Breadcrumbs sx={{ mb: 1 }}>
+        <Link component="button" underline="hover" onClick={() => navigate('/helm')}>
+          Helm Releases
+        </Link>
+        <Typography color="text.primary">{name}</Typography>
+      </Breadcrumbs>
+      {error && <Alert severity="error">{error.message}</Alert>}
+      {release && (
+        <>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1, flexWrap: 'wrap' }}>
+            <Typography variant="h6">{release.name}</Typography>
+            <StatusChip status={release.status} />
+            <Chip label={`${release.chart}-${release.chartVersion}`} variant="outlined" />
+            {release.appVersion && <Chip label={`app ${release.appVersion}`} variant="outlined" />}
+            <Chip label={`rev ${release.revision}`} variant="outlined" />
+            <Chip label={`${ns} @ ${ctx}`} variant="outlined" />
+            <Box sx={{ flex: 1 }} />
+            <Button color="error" startIcon={<DeleteIcon />} variant="outlined" onClick={() => setConfirmOpen(true)}>
+              Uninstall
+            </Button>
+          </Stack>
+          <Tabs value={tab} onChange={(_e, v) => setTab(v as string)} sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 36 }}>
+            <Tab value="values" label="Values" sx={{ minHeight: 36 }} />
+            <Tab value="computed" label="Computed values" sx={{ minHeight: 36 }} />
+            <Tab value="manifest" label="Manifest" sx={{ minHeight: 36 }} />
+            <Tab value="history" label="History" sx={{ minHeight: 36 }} />
+            {release.notes && <Tab value="notes" label="Notes" sx={{ minHeight: 36 }} />}
+          </Tabs>
+          <Box sx={{ flex: 1, minHeight: 0, pt: 1 }}>
+            {tab === 'values' && <YamlEditor value={valuesYaml || '# no user-supplied values\n'} readOnly />}
+            {tab === 'computed' && <YamlEditor value={computedYaml} readOnly />}
+            {tab === 'manifest' && <YamlEditor value={release.manifest} readOnly />}
+            {tab === 'history' && (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Revision</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Chart</TableCell>
+                    <TableCell>App version</TableCell>
+                    <TableCell>Updated</TableCell>
+                    <TableCell>Description</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(history ?? []).map((h) => (
+                    <TableRow key={h.revision}>
+                      <TableCell>{h.revision}</TableCell>
+                      <TableCell>
+                        <StatusChip status={h.status} />
+                      </TableCell>
+                      <TableCell>
+                        {h.chart}-{h.chartVersion}
+                      </TableCell>
+                      <TableCell>{h.appVersion ?? ''}</TableCell>
+                      <TableCell>{h.updated ? <AgeCell timestamp={h.updated} /> : ''}</TableCell>
+                      <TableCell>{h.description ?? ''}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            {tab === 'notes' && (
+              <Box component="pre" sx={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', p: 1 }}>
+                {release.notes}
+              </Box>
+            )}
+          </Box>
+        </>
+      )}
+      {isLoading && <Typography color="text.secondary">Loading…</Typography>}
+      <ConfirmDialog
+        open={confirmOpen}
+        title={`Uninstall ${name}`}
+        danger
+        confirmLabel="Uninstall"
+        busy={uninstall.isPending}
+        message={
+          <>
+            This deletes every resource in the release manifest and removes the release records. <b>Helm hooks are not executed.</b>
+          </>
+        }
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() =>
+          uninstall.mutate(
+            { ctx: ctx!, ns: ns!, name: name! },
+            {
+              onSuccess: (r) => {
+                setConfirmOpen(false);
+                setToast(`Uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
+                setTimeout(() => navigate('/helm'), 1200);
+              },
+              onError: (e) => {
+                setConfirmOpen(false);
+                setToast(`Uninstall failed: ${e.message}`);
+              },
+            },
+          )
+        }
+      />
+      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(undefined)} message={toast} />
+    </Box>
+  );
+}

@@ -1,0 +1,61 @@
+import { create } from 'zustand';
+
+export interface TerminalTab {
+  kind: 'terminal';
+  id: string;
+  title: string;
+  ctx: string;
+  namespace: string;
+  pod: string;
+  container: string;
+}
+
+export interface LogsTab {
+  kind: 'logs';
+  id: string;
+  title: string;
+  ctx: string;
+  namespace: string;
+  pods: string[];
+  container?: string;
+  previous?: boolean;
+}
+
+export type DockTab = TerminalTab | LogsTab;
+
+interface DockState {
+  tabs: DockTab[];
+  activeId?: string;
+  open: boolean;
+  height: number;
+  addTab: (tab: DockTab) => void;
+  closeTab: (id: string) => void;
+  setActive: (id: string) => void;
+  setOpen: (open: boolean) => void;
+  setHeight: (height: number) => void;
+}
+
+let counter = 0;
+export function dockTabId(): string {
+  return `dock-${++counter}-${Date.now().toString(36)}`;
+}
+
+export const useDockStore = create<DockState>((set) => ({
+  tabs: [],
+  activeId: undefined,
+  open: false,
+  height: 320,
+  addTab: (tab) => set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id, open: true })),
+  closeTab: (id) =>
+    set((s) => {
+      const tabs = s.tabs.filter((t) => t.id !== id);
+      return {
+        tabs,
+        activeId: s.activeId === id ? tabs[tabs.length - 1]?.id : s.activeId,
+        open: tabs.length > 0 ? s.open : false,
+      };
+    }),
+  setActive: (id) => set({ activeId: id, open: true }),
+  setOpen: (open) => set({ open }),
+  setHeight: (height) => set({ height: Math.max(160, Math.min(window.innerHeight - 200, height)) }),
+}));

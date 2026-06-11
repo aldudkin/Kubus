@@ -1,0 +1,141 @@
+import type { KubeObject } from '@kubedeck/shared';
+
+interface ContainerStatus {
+  name: string;
+  ready?: boolean;
+  restartCount?: number;
+  state?: { waiting?: { reason?: string }; terminated?: { reason?: string }; running?: unknown };
+}
+
+export interface PodSummary {
+  ready: string;
+  status: string;
+  restarts: number;
+  node?: string;
+}
+
+export function podSummary(pod: KubeObject): PodSummary {
+  const status = pod.status as
+    | {
+        phase?: string;
+        reason?: string;
+        containerStatuses?: ContainerStatus[];
+        initContainerStatuses?: ContainerStatus[];
+      }
+    | undefined;
+  const spec = pod.spec as { nodeName?: string; containers?: unknown[] } | undefined;
+  const statuses = status?.containerStatuses ?? [];
+  const total = (spec?.containers ?? []).length || statuses.length;
+  const readyCount = statuses.filter((c) => c.ready).length;
+  const restarts = statuses.reduce((sum, c) => sum + (c.restartCount ?? 0), 0);
+
+  let display = status?.reason ?? status?.phase ?? 'Unknown';
+  if (pod.metadata.deletionTimestamp) {
+    display = 'Terminating';
+  } else {
+    for (const c of [...(status?.initContainerStatuses ?? []), ...statuses]) {
+      const waiting = c.state?.waiting?.reason;
+      const terminated = c.state?.terminated?.reason;
+      if (waiting && waiting !== 'PodInitializing') {
+        display = waiting;
+        break;
+      }
+      if (terminated && terminated !== 'Completed' && display === 'Running') {
+        display = terminated;
+        break;
+      }
+    }
+  }
+  return { ready: `${readyCount}/${total}`, status: display, restarts, node: spec?.nodeName };
+}
+
+export function workloadReady(obj: KubeObject): string {
+  const spec = obj.spec as { replicas?: number } | undefined;
+  const status = obj.status as { readyReplicas?: number; replicas?: number } | undefined;
+  return `${status?.readyReplicas ?? 0}/${spec?.replicas ?? status?.replicas ?? 0}`;
+}
+
+export function nodeStatus(node: KubeObject): string {
+  const conditions = (node.status as { conditions?: Array<{ type: string; status: string }> })?.conditions ?? [];
+  const ready = conditions.find((c) => c.type === 'Ready');
+  let s = ready?.status === 'True' ? 'Ready' : 'NotReady';
+  if ((node.spec as { unschedulable?: boolean })?.unschedulable) s += ',SchedulingDisabled';
+  return s;
+}
+
+export function nodeRoles(node: KubeObject): string {
+  return Object.keys(node.metadata.labels ?? {})
+    .filter((l) => l.startsWith('node-role.kubernetes.io/'))
+    .map((l) => l.slice('node-role.kubernetes.io/'.length))
+    .join(',');
+}
+
+export function servicePorts(svc: KubeObject): string {
+  const ports = (svc.spec as { ports?: Array<{ port: number; protocol?: string; nodePort?: number }> })?.ports ?? [];
+  return ports.map((p) => `${p.port}${p.nodePort ? `:${p.nodePort}` : ''}/${p.protocol ?? 'TCP'}`).join(', ');
+}
+
+export function ingressHosts(ing: KubeObject): string {
+  const rules = (ing.spec as { rules?: Array<{ host?: string }> })?.rules ?? [];
+  return rules.map((r) => r.host ?? '*').join(', ');
+}
+
+export function dataKeyCount(obj: KubeObject): number {
+  return Object.keys((obj.data as Record<string, unknown> | undefined) ?? {}).length;
+}
+
+export function jobStatus(job: KubeObject): { completions: string; duration: string } {
+  const spec = job.spec as { completions?: number } | undefined;
+  const status = job.status as { succeeded?: number; startTime?: string; completionTime?: string } | undefined;
+  const completions = `${status?.succeeded ?? 0}/${spec?.completions ?? 1}`;
+  let duration = '';
+  if (status?.startTime) {
+    const endMs = status.completionTime ? Date.parse(status.completionTime) : Date.now();
+    const s = Math.floor((endMs - Date.parse(status.startTime)) / 1000);
+    duration = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${s % 60}s` : `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+  }
+  return { completions, duration };
+}
+
+export function eventFields(e: KubeObject): { type: string; reason: string; object: string; message: string; count: number; lastSeen?: string } {
+  const ev = e as KubeObject & {
+    type?: string;
+    reason?: string;
+    message?: string;
+    count?: number;
+    lastTimestamp?: string;
+    eventTime?: string;
+    firstTimestamp?: string;
+    involvedObject?: { kind?: string; name?: string };
+  };
+  return {
+    type: ev.type ?? '',
+    reason: ev.reason ?? '',
+    object: `${ev.involvedObject?.kind ?? ''}/${ev.involvedObject?.name ?? ''}`,
+    message: ev.message ?? '',
+    count: ev.count ?? 1,
+    lastSeen: ev.lastTimestamp ?? ev.eventTime ?? ev.firstTimestamp ?? e.metadata.creationTimestamp,
+  };
+}
+
+/** Containers of a pod spec (incl. init containers). */
+export function podContainerNames(pod: KubeObject): string[] {
+  const spec = pod.spec as { containers?: Array<{ name: string }>; initContainers?: Array<{ name: string }> } | undefined;
+  return [...(spec?.containers ?? []), ...(spec?.initContainers ?? [])].map((c) => c.name);
+}
+
+/** Strip noisy fields for diff/display normalization. */
+export function normalizeForDiff(obj: KubeObject): KubeObject {
+  const clone = JSON.parse(JSON.stringify(obj)) as KubeObject;
+  delete clone.status;
+  const meta = clone.metadata as unknown as Record<string, unknown>;
+  for (const key of ['uid', 'resourceVersion', 'creationTimestamp', 'generation', 'managedFields', 'selfLink']) {
+    delete meta[key];
+  }
+  const annotations = meta.annotations as Record<string, string> | undefined;
+  if (annotations) {
+    delete annotations['kubectl.kubernetes.io/last-applied-configuration'];
+    if (!Object.keys(annotations).length) delete meta.annotations;
+  }
+  return clone;
+}

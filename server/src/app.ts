@@ -1,0 +1,102 @@
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import Fastify, { type FastifyInstance } from 'fastify';
+import fastifyWebsocket from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
+import type { ServerConfig } from './config.js';
+import { ClusterManager } from './kube/cluster-manager.js';
+import { PortForwardManager } from './kube/portforward-manager.js';
+import { registerContextRoutes } from './routes/contexts.js';
+import { registerResourceRoutes } from './routes/resources.js';
+import { registerActionRoutes } from './routes/actions.js';
+import { registerMetricsRoutes } from './routes/metrics.js';
+import { registerHelmRoutes } from './routes/helm.js';
+import { registerPortForwardRoutes } from './routes/portforward.js';
+import { registerWatchSocket } from './ws/watch-socket.js';
+import { registerLogsSocket } from './ws/logs-socket.js';
+import { registerExecSocket } from './ws/exec-socket.js';
+
+export interface AppContext {
+  config: ServerConfig;
+  clusters: ClusterManager;
+  portForwards: PortForwardManager;
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export async function buildApp(config: ServerConfig): Promise<{ app: FastifyInstance; ctx: AppContext }> {
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? 'info',
+      transport: process.env.NODE_ENV !== 'production' ? { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss' } } : undefined,
+    },
+    // Resource lists can be large; YAML applies too.
+    bodyLimit: 32 * 1024 * 1024,
+  });
+
+  const clusters = new ClusterManager(app.log, config.kubeconfigOverride);
+  const portForwards = new PortForwardManager(clusters, app.log);
+  const ctx: AppContext = { config, clusters, portForwards };
+
+  await app.register(fastifyWebsocket, {
+    options: {
+      maxPayload: 16 * 1024 * 1024,
+      verifyClient: (info: { origin?: string; req: { url?: string; headers: Record<string, unknown> } }) => {
+        // Origin check: only same-host browser pages (or non-browser clients
+        // without an Origin header) may open sockets — DNS-rebinding defense.
+        const origin = info.origin;
+        if (origin) {
+          try {
+            const u = new URL(origin);
+            if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') return false;
+          } catch {
+            return false;
+          }
+        }
+        const url = new URL(info.req.url ?? '/', 'http://localhost');
+        return url.searchParams.get('token') === config.token;
+      },
+    },
+  });
+
+  // Bearer-token auth for all /api routes.
+  app.addHook('onRequest', async (req, reply) => {
+    if (!req.url.startsWith('/api/')) return;
+    const header = req.headers.authorization;
+    const ok = header === `Bearer ${config.token}`;
+    if (!ok) {
+      await reply.code(401).send({ message: 'unauthorized' });
+    }
+  });
+
+  registerContextRoutes(app, ctx);
+  registerResourceRoutes(app, ctx);
+  registerActionRoutes(app, ctx);
+  registerMetricsRoutes(app, ctx);
+  registerHelmRoutes(app, ctx);
+  registerPortForwardRoutes(app, ctx);
+  registerWatchSocket(app, ctx);
+  registerLogsSocket(app, ctx);
+  registerExecSocket(app, ctx);
+
+  // Serve the built client in production (same-origin, no CORS needed).
+  const clientDist = path.resolve(__dirname, '../../client/dist');
+  if (existsSync(clientDist)) {
+    await app.register(fastifyStatic, { root: clientDist });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith('/api/') || req.url.startsWith('/ws/')) {
+        void reply.code(404).send({ message: 'not found' });
+      } else {
+        void reply.sendFile('index.html');
+      }
+    });
+  }
+
+  app.addHook('onClose', async () => {
+    portForwards.stopAll();
+    clusters.dispose();
+  });
+
+  return { app, ctx };
+}

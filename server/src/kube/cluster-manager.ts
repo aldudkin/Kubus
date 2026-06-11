@@ -1,0 +1,241 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import type { FastifyBaseLogger } from 'fastify';
+import {
+  AppsV1Api,
+  BatchV1Api,
+  CoreV1Api,
+  Exec,
+  KubeConfig,
+  KubernetesObjectApi,
+  Log,
+  Metrics,
+  PortForward,
+  VersionApi,
+  type ApiConstructor,
+  type ApiType,
+} from '@kubernetes/client-node';
+import type { ContextInfo } from '@kubedeck/shared';
+import { RawClient } from './raw-client.js';
+import { DiscoveryCache } from './discovery.js';
+import { WatcherRegistry } from './watcher.js';
+import { MetricsPoller } from './metrics-poller.js';
+import { HttpProblem } from '../util/errors.js';
+
+/** Everything the server holds for one connected kubeconfig context. */
+export class ClusterHandle {
+  readonly kc: KubeConfig;
+  readonly raw: RawClient;
+  readonly discovery: DiscoveryCache;
+  readonly watchers: WatcherRegistry;
+  readonly metricsPoller: MetricsPoller;
+  health: ContextInfo['health'] = 'connecting';
+  healthMessage?: string;
+  kubernetesVersion?: string;
+
+  private clients = new Map<string, unknown>();
+
+  constructor(
+    baseConfig: KubeConfig,
+    public readonly contextName: string,
+    log: FastifyBaseLogger,
+  ) {
+    // Each handle owns its own KubeConfig: setCurrentContext mutates state
+    // and exec-auth caches per-instance — never share across contexts.
+    this.kc = new KubeConfig();
+    this.kc.loadFromString(baseConfig.exportConfig());
+    this.kc.setCurrentContext(contextName);
+    this.raw = new RawClient(this.kc);
+    this.discovery = new DiscoveryCache(this.raw);
+    this.watchers = new WatcherRegistry(this.raw, log);
+    this.metricsPoller = new MetricsPoller(new Metrics(this.kc), log);
+  }
+
+  client<T extends ApiType>(ctor: ApiConstructor<T>): T {
+    const key = ctor.name;
+    let client = this.clients.get(key);
+    if (!client) {
+      client = this.kc.makeApiClient(ctor);
+      this.clients.set(key, client);
+    }
+    return client as T;
+  }
+
+  get core(): CoreV1Api {
+    return this.client(CoreV1Api);
+  }
+  get apps(): AppsV1Api {
+    return this.client(AppsV1Api);
+  }
+  get batch(): BatchV1Api {
+    return this.client(BatchV1Api);
+  }
+  get objects(): KubernetesObjectApi {
+    let api = this.clients.get('KubernetesObjectApi') as KubernetesObjectApi | undefined;
+    if (!api) {
+      api = KubernetesObjectApi.makeApiClient(this.kc);
+      this.clients.set('KubernetesObjectApi', api);
+    }
+    return api;
+  }
+  makeExec(): Exec {
+    return new Exec(this.kc);
+  }
+  makeLog(): Log {
+    return new Log(this.kc);
+  }
+  makePortForward(): PortForward {
+    return new PortForward(this.kc);
+  }
+
+  async probe(): Promise<void> {
+    try {
+      const info = await this.client(VersionApi).getCode();
+      this.kubernetesVersion = info.gitVersion;
+      this.health = 'connected';
+      this.healthMessage = undefined;
+    } catch (err) {
+      this.health = 'error';
+      this.healthMessage = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** Start background machinery used by the overview dashboard + metrics. */
+  activate(): void {
+    this.metricsPoller.start();
+    // Pin overview watchers (never released; cheap and shared with the UI).
+    this.watchers.acquire('', 'v1', 'pods');
+    this.watchers.acquire('apps', 'v1', 'deployments');
+    this.watchers.acquire('', 'v1', 'events');
+    this.watchers.acquire('', 'v1', 'nodes');
+    this.watchers.acquire('', 'v1', 'namespaces');
+  }
+
+  dispose(): void {
+    this.metricsPoller.stop();
+    this.watchers.stopAll();
+  }
+}
+
+export class ClusterManager extends EventEmitter {
+  private kc = new KubeConfig();
+  private handles = new Map<string, ClusterHandle>();
+  private fsWatchers: fs.FSWatcher[] = [];
+
+  constructor(
+    private log: FastifyBaseLogger,
+    private kubeconfigOverride?: string,
+  ) {
+    super();
+    this.loadKubeconfig();
+    this.watchKubeconfigFiles();
+  }
+
+  private loadKubeconfig(): void {
+    try {
+      if (this.kubeconfigOverride) {
+        this.kc.loadFromFile(this.kubeconfigOverride);
+      } else {
+        this.kc.loadFromDefault();
+      }
+    } catch (err) {
+      this.log.warn({ err: String(err) }, 'failed to load kubeconfig');
+    }
+  }
+
+  private kubeconfigPaths(): string[] {
+    if (this.kubeconfigOverride) return [this.kubeconfigOverride];
+    const env = process.env.KUBECONFIG;
+    if (env) return env.split(':').filter(Boolean);
+    const home = process.env.HOME ?? '';
+    return home ? [`${home}/.kube/config`] : [];
+  }
+
+  private watchKubeconfigFiles(): void {
+    for (const p of this.kubeconfigPaths()) {
+      try {
+        let debounce: NodeJS.Timeout | undefined;
+        const w = fs.watch(p, () => {
+          if (debounce) clearTimeout(debounce);
+          debounce = setTimeout(() => this.reload(), 500);
+        });
+        w.unref();
+        this.fsWatchers.push(w);
+      } catch {
+        // file may not exist yet
+      }
+    }
+  }
+
+  private reload(): void {
+    this.log.info('kubeconfig changed, reloading');
+    this.kc = new KubeConfig();
+    this.loadKubeconfig();
+    const valid = new Set(this.kc.getContexts().map((c) => c.name));
+    for (const [name, handle] of this.handles) {
+      if (!valid.has(name)) {
+        handle.dispose();
+        this.handles.delete(name);
+      }
+    }
+    this.emit('contexts-changed');
+  }
+
+  listContexts(): ContextInfo[] {
+    return this.kc.getContexts().map((c) => {
+      const handle = this.handles.get(c.name);
+      const cluster = this.kc.getCluster(c.cluster);
+      return {
+        name: c.name,
+        cluster: c.cluster,
+        user: c.user,
+        namespace: c.namespace ?? undefined,
+        server: cluster?.server,
+        health: handle?.health ?? 'unknown',
+        healthMessage: handle?.healthMessage,
+        active: !!handle,
+        kubernetesVersion: handle?.kubernetesVersion,
+      };
+    });
+  }
+
+  /** Get an active handle or throw 400/404. */
+  get(contextName: string): ClusterHandle {
+    const handle = this.handles.get(contextName);
+    if (!handle) throw new HttpProblem(409, `context "${contextName}" is not connected`, 'NotConnected');
+    return handle;
+  }
+
+  has(contextName: string): boolean {
+    return this.handles.has(contextName);
+  }
+
+  async connect(contextName: string): Promise<ClusterHandle> {
+    const existing = this.handles.get(contextName);
+    if (existing) return existing;
+    if (!this.kc.getContexts().some((c) => c.name === contextName)) {
+      throw new HttpProblem(404, `context "${contextName}" not found in kubeconfig`, 'NotFound');
+    }
+    const handle = new ClusterHandle(this.kc, contextName, this.log);
+    this.handles.set(contextName, handle);
+    await handle.probe();
+    if (handle.health === 'connected') {
+      handle.activate();
+    }
+    return handle;
+  }
+
+  disconnect(contextName: string): void {
+    const handle = this.handles.get(contextName);
+    if (handle) {
+      handle.dispose();
+      this.handles.delete(contextName);
+    }
+  }
+
+  dispose(): void {
+    for (const w of this.fsWatchers) w.close();
+    for (const handle of this.handles.values()) handle.dispose();
+    this.handles.clear();
+  }
+}

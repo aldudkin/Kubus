@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos
+---
+# CrashLoopBackOff
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crashloop
+  namespace: chaos
+spec:
+  containers:
+    - name: crash
+      image: busybox
+      command: ['sh', '-c', 'echo "I crash in 5s"; sleep 5; exit 1']
+---
+# ImagePullBackOff
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-image
+  namespace: chaos
+spec:
+  containers:
+    - name: nope
+      image: registry.invalid/does/not:exist
+---
+# Unavailable deployment (bad image)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-deploy
+  namespace: chaos
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: broken }
+  template:
+    metadata:
+      labels: { app: broken }
+    spec:
+      containers:
+        - name: broken
+          image: registry.invalid/broken:latest
+---
+# CronJob firing every minute (for "Trigger now" testing too)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tick
+  namespace: chaos
+spec:
+  schedule: '*/1 * * * *'
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: tick
+              image: busybox
+              command: ['sh', '-c', 'date; echo tick']
+---
+# Secret for redaction testing
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-credentials
+  namespace: chaos
+type: Opaque
+stringData:
+  username: admin
+  password: hunter2

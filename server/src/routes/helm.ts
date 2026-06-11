@@ -1,0 +1,47 @@
+import type { FastifyInstance } from 'fastify';
+import type { AppContext } from '../app.js';
+import { getHistory, getRelease, listReleases } from '../helm/release-reader.js';
+import { uninstallRelease } from '../helm/uninstall.js';
+import { sendError } from '../util/errors.js';
+
+export function registerHelmRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get<{ Params: { ctx: string }; Querystring: { namespace?: string } }>('/api/contexts/:ctx/helm/releases', async (req, reply) => {
+    try {
+      const handle = ctx.clusters.get(req.params.ctx);
+      return await listReleases(handle, req.query.namespace || undefined);
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+
+  app.get<{ Params: { ctx: string; ns: string; name: string } }>('/api/contexts/:ctx/helm/releases/:ns/:name', async (req, reply) => {
+    try {
+      const handle = ctx.clusters.get(req.params.ctx);
+      return await getRelease(handle, req.params.ns, req.params.name);
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+
+  app.get<{ Params: { ctx: string; ns: string; name: string } }>('/api/contexts/:ctx/helm/releases/:ns/:name/history', async (req, reply) => {
+    try {
+      const handle = ctx.clusters.get(req.params.ctx);
+      return await getHistory(handle, req.params.ns, req.params.name);
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+
+  app.delete<{ Params: { ctx: string; ns: string; name: string } }>('/api/contexts/:ctx/helm/releases/:ns/:name', async (req, reply) => {
+    try {
+      const handle = ctx.clusters.get(req.params.ctx);
+      return await uninstallRelease(handle, req.params.ns, req.params.name, app.log);
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+}
