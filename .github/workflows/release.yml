@@ -36,6 +36,8 @@ jobs:
             ~\AppData\Local\electron-builder\Cache
           key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
+      - name: Verify release version
+        run: node hack/verify-release-version.mjs
       - run: pnpm -r build
       - name: Package and publish
         run: pnpm --filter @kubedeck/electron exec electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
