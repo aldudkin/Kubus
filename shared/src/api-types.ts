@@ -17,6 +17,44 @@ export interface ContextInfo {
   kubernetesVersion?: string;
 }
 
+// ---- Settings / kubeconfig management ----
+
+export type KubeconfigSource = 'cli-flag' | 'settings-file' | 'env' | 'default';
+
+export interface KubeconfigSettings {
+  /** All files currently being read/watched, in precedence order. */
+  paths: string[];
+  /** The file imports are written to (paths[0]); null if none resolvable. */
+  primaryPath: string | null;
+  /** Active explicit override, if any. */
+  override: string | null;
+  /** Where the effective kubeconfig came from. */
+  source: KubeconfigSource;
+  /** $KUBECONFIG as seen by the server (informational). */
+  kubeconfigEnv: string | null;
+}
+
+export interface SetKubeconfigRequest {
+  /** Absolute or ~-prefixed path; null clears the override (back to env/default). */
+  path: string | null;
+}
+
+export interface KubeconfigImportRequest {
+  yaml: string;
+  /** Replace existing entries with the same name instead of failing with 409. */
+  overwrite?: boolean;
+}
+
+export interface KubeconfigImportResponse {
+  added: { contexts: string[]; clusters: string[]; users: string[] };
+  /** Entries identical to existing ones, silently skipped. */
+  skipped: string[];
+  /** Backup written before the merge; null when the target file didn't exist. */
+  backupPath: string | null;
+  /** Fresh context list after the reload. */
+  contexts: ContextInfo[];
+}
+
 export interface ResourceKindInfo {
   group: string; // '' for core
   version: string;

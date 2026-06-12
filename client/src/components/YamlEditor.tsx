@@ -3,6 +3,7 @@ import { Alert, Box, Button, Stack } from '@mui/material';
 import Editor from '@monaco-editor/react';
 import { useTheme } from '@mui/material/styles';
 import type { ResourceDryRunResponse } from '@kubedeck/shared';
+import { useUiPrefsStore } from '../state/prefs.js';
 
 interface Props {
   value: string;
@@ -16,6 +17,7 @@ interface Props {
 
 export function YamlEditor({ value, readOnly, onApply, onDryRun, applyLabel = 'Apply', toolbar }: Props) {
   const theme = useTheme();
+  const monoFontSize = useUiPrefsStore((s) => s.monoFontSize);
   const [text, setText] = useState(value);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -117,7 +119,7 @@ export function YamlEditor({ value, readOnly, onApply, onDryRun, applyLabel = 'A
           options={{
             readOnly: readOnly ?? !onApply,
             minimap: { enabled: false },
-            fontSize: 12,
+            fontSize: monoFontSize,
             scrollBeyondLastLine: false,
             wordWrap: 'on',
             tabSize: 2,

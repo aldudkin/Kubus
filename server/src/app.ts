@@ -7,7 +7,9 @@ import fastifyStatic from '@fastify/static';
 import type { ServerConfig } from './config.js';
 import { ClusterManager } from './kube/cluster-manager.js';
 import { PortForwardManager } from './kube/portforward-manager.js';
+import { SettingsStore } from './settings-store.js';
 import { registerContextRoutes } from './routes/contexts.js';
+import { registerSettingsRoutes } from './routes/settings.js';
 import { registerResourceRoutes } from './routes/resources.js';
 import { registerActionRoutes } from './routes/actions.js';
 import { registerDetailRoutes } from './routes/detail.js';
@@ -26,6 +28,9 @@ export interface AppContext {
   config: ServerConfig;
   clusters: ClusterManager;
   portForwards: PortForwardManager;
+  settings: SettingsStore;
+  /** Raw --kubeconfig CLI flag (cleared when the user resets the override). */
+  cliKubeconfig: string | undefined;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,9 +45,12 @@ export async function buildApp(config: ServerConfig): Promise<{ app: FastifyInst
     bodyLimit: 32 * 1024 * 1024,
   });
 
-  const clusters = new ClusterManager(app.log, config.kubeconfigOverride);
+  const settings = new SettingsStore(app.log);
+  // CLI flag > persisted UI setting > $KUBECONFIG > ~/.kube/config.
+  const effectiveOverride = config.kubeconfigOverride ?? settings.load().kubeconfigPath;
+  const clusters = new ClusterManager(app.log, effectiveOverride);
   const portForwards = new PortForwardManager(clusters, app.log);
-  const ctx: AppContext = { config, clusters, portForwards };
+  const ctx: AppContext = { config, clusters, portForwards, settings, cliKubeconfig: config.kubeconfigOverride };
 
   await app.register(fastifyWebsocket, {
     options: {
@@ -76,6 +84,7 @@ export async function buildApp(config: ServerConfig): Promise<{ app: FastifyInst
   });
 
   registerContextRoutes(app, ctx);
+  registerSettingsRoutes(app, ctx);
   registerResourceRoutes(app, ctx);
   registerActionRoutes(app, ctx);
   registerDetailRoutes(app, ctx);

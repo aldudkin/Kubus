@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import type { ExecServerControl } from '@kubedeck/shared';
 import { wsUrl } from '../api/http.js';
 import type { NodeShellTab, TerminalTab } from '../state/dock.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 
 export function TerminalPane({ tab, active }: { tab: TerminalTab | NodeShellTab; active: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -16,8 +17,9 @@ export function TerminalPane({ tab, active }: { tab: TerminalTab | NodeShellTab;
     const el = containerRef.current;
     if (!el) return;
 
+    const { monoFontSize, defaultShell } = useUiPrefsStore.getState();
     const term = new Terminal({
-      fontSize: 13,
+      fontSize: monoFontSize + 1,
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
       cursorBlink: true,
       theme: { background: '#16161e' },
@@ -36,6 +38,7 @@ export function TerminalPane({ tab, active }: { tab: TerminalTab | NodeShellTab;
             namespace: tab.namespace,
             pod: tab.pod,
             container: tab.container,
+            shell: defaultShell !== 'auto' && defaultShell.trim() ? defaultShell.trim() : undefined,
             cols: term.cols,
             rows: term.rows,
           }),

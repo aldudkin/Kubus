@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useUiPrefsStore } from './prefs.js';
 
 export interface ContextSettings {
   /**
@@ -49,5 +50,7 @@ export const useClustersStore = create<ClustersState>()(
 );
 
 export function useIsProtected(ctx: string): boolean {
-  return useClustersStore((s) => !!s.contextSettings[ctx]?.protected);
+  const explicit = useClustersStore((s) => s.contextSettings[ctx]?.protected);
+  const protectByDefault = useUiPrefsStore((s) => s.protectByDefault);
+  return explicit ?? protectByDefault;
 }

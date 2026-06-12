@@ -9,6 +9,7 @@ interface LogPrefsState {
   highlight: boolean;
   setWrap: (wrap: boolean) => void;
   cycleTsMode: () => void;
+  setTsMode: (tsMode: TsMode) => void;
   setHighlight: (highlight: boolean) => void;
 }
 
@@ -22,6 +23,7 @@ export const useLogPrefsStore = create<LogPrefsState>()(
       highlight: true,
       setWrap: (wrap) => set({ wrap }),
       cycleTsMode: () => set((s) => ({ tsMode: TS_CYCLE[s.tsMode] })),
+      setTsMode: (tsMode) => set({ tsMode }),
       setHighlight: (highlight) => set({ highlight }),
     }),
     { name: 'kubedeck-log-prefs' },

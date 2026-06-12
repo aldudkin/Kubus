@@ -134,7 +134,6 @@ export function RowActions({ target }: { target: RowActionTarget }) {
           namespace: ns,
           pods: podNames,
           follow: true,
-          tailLines: 500,
         });
       }
     } catch (err) {

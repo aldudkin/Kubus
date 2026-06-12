@@ -88,7 +88,6 @@ export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) =>
               namespace: ns,
               pods: podNames,
               follow: true,
-              tailLines: 500,
             });
           }
           return `Streaming logs for ${ref.kind}/${ref.name}`;

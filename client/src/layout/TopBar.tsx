@@ -4,17 +4,20 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SearchIcon from '@mui/icons-material/Search';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore } from '../state/dock.js';
 import { ClusterSwitcher } from './ClusterSwitcher.js';
 import { NamespaceFilter } from './NamespaceFilter.js';
 import { SearchDialog } from './SearchDialog.js';
+import { SettingsDialog } from '../components/settings/SettingsDialog.js';
 
 export function TopBar() {
   const mode = useClustersStore((s) => s.themeMode);
   const toggleTheme = useClustersStore((s) => s.toggleTheme);
   const dock = useDockStore();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -88,9 +91,15 @@ export function TopBar() {
               {mode === 'dark' ? <LightModeOutlinedIcon fontSize="small" /> : <DarkModeOutlinedIcon fontSize="small" />}
             </IconButton>
           </Tooltip>
+          <Tooltip title="Settings">
+            <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+              <SettingsOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </Toolbar>
       </AppBar>
       <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );
 }

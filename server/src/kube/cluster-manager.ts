@@ -153,6 +153,28 @@ export class ClusterManager extends EventEmitter {
     return home ? [path.join(home, '.kube', 'config')] : [];
   }
 
+  getKubeconfigPaths(): string[] {
+    return this.kubeconfigPaths();
+  }
+
+  /** The file kubeconfig imports are written to. */
+  primaryKubeconfigPath(): string | null {
+    return this.kubeconfigPaths()[0] ?? null;
+  }
+
+  getKubeconfigOverride(): string | undefined {
+    return this.kubeconfigOverride;
+  }
+
+  /** Re-point the kubeconfig at runtime: reload contexts and re-watch files. */
+  setKubeconfigOverride(p: string | undefined): void {
+    this.kubeconfigOverride = p;
+    for (const w of this.fsWatchers) w.close();
+    this.fsWatchers = [];
+    this.reload();
+    this.watchKubeconfigFiles();
+  }
+
   private watchKubeconfigFiles(): void {
     for (const p of this.kubeconfigPaths()) {
       try {
@@ -169,7 +191,7 @@ export class ClusterManager extends EventEmitter {
     }
   }
 
-  private reload(): void {
+  reload(): void {
     this.log.info('kubeconfig changed, reloading');
     this.kc = new KubeConfig();
     this.loadKubeconfig();

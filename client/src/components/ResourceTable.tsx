@@ -3,6 +3,7 @@ import { Box, Chip, InputAdornment, Stack, TextField, Typography } from '@mui/ma
 import SearchIcon from '@mui/icons-material/Search';
 import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams } from '@mui/x-data-grid';
 import type { ClusterRow } from '../api/queries.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 
 interface Props {
   rows: ClusterRow[];
@@ -47,6 +48,7 @@ export function ResourceTable({
 
   const hiddenKey = (hiddenFields ?? []).join(',');
   const [visibility, setVisibility] = useState<GridColumnVisibilityModel>({});
+  const tableDensity = useUiPrefsStore((s) => s.tableDensity);
   useEffect(() => {
     setVisibility(Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []));
   }, [hiddenKey]);
@@ -115,7 +117,7 @@ export function ResourceTable({
         columns={columns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
-        density="compact"
+        density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
         checkboxSelection={checkboxSelection}
         onRowSelectionModelChange={
           onSelectionChange

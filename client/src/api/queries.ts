@@ -38,11 +38,16 @@ import type {
   StopDebugRequest,
   HelmRollbackResult,
   PrinterColumn,
+  KubeconfigSettings,
+  SetKubeconfigRequest,
+  KubeconfigImportRequest,
+  KubeconfigImportResponse,
 } from '@kubedeck/shared';
 import { groupToPath } from '@kubedeck/shared';
 import { apiFetch } from './http.js';
 import { watchClient } from './ws/watch-client.js';
 import { useClustersStore } from '../state/clusters.js';
+import { useRefetchInterval } from '../state/prefs.js';
 
 // ---- Contexts ----
 
@@ -52,14 +57,17 @@ export function useContexts() {
   useEffect(
     () =>
       watchClient.onBroadcast((msg) => {
-        if (msg.op === 'contexts-changed') void qc.invalidateQueries({ queryKey: ['contexts'] });
+        if (msg.op === 'contexts-changed') {
+          void qc.invalidateQueries({ queryKey: ['contexts'] });
+          void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
+        }
       }),
     [qc],
   );
   return useQuery({
     queryKey: ['contexts'],
     queryFn: () => apiFetch<ContextInfo[]>('/api/contexts'),
-    refetchInterval: 30_000,
+    refetchInterval: useRefetchInterval(30_000),
   });
 }
 
@@ -74,6 +82,48 @@ export function useConnectContext() {
       void qc.invalidateQueries({ queryKey: ['api-resources-multi'] });
       void qc.invalidateQueries({ queryKey: ['namespaces'] });
       void qc.invalidateQueries({ queryKey: ['overview'] });
+    },
+  });
+}
+
+// ---- Settings / kubeconfig management ----
+
+export function useKubeconfigSettings(enabled = true) {
+  return useQuery({
+    queryKey: ['kubeconfig-settings'],
+    queryFn: () => apiFetch<KubeconfigSettings>('/api/settings/kubeconfig'),
+    enabled,
+  });
+}
+
+export function useSetKubeconfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SetKubeconfigRequest) =>
+      apiFetch<KubeconfigSettings>('/api/settings/kubeconfig', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (settings) => {
+      qc.setQueryData(['kubeconfig-settings'], settings);
+      void qc.invalidateQueries({ queryKey: ['contexts'] });
+    },
+  });
+}
+
+export function useImportKubeconfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: KubeconfigImportRequest) =>
+      apiFetch<KubeconfigImportResponse>('/api/settings/kubeconfig/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (resp) => {
+      qc.setQueryData(['contexts'], resp.contexts);
+      void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
     },
   });
 }
@@ -148,7 +198,7 @@ export function useNamespaces(contexts: string[]) {
       return [...new Set(all.flat())].sort();
     },
     enabled: contexts.length > 0,
-    refetchInterval: 60_000,
+    refetchInterval: useRefetchInterval(60_000),
   });
 }
 
@@ -320,7 +370,7 @@ export function useResourceEvents(sel: { ctx: string; name: string; kind?: strin
       return apiFetch<{ items: KubeObject[] }>(`/api/contexts/${encodeURIComponent(sel!.ctx)}/events?${params}`);
     },
     enabled: !!sel,
-    refetchInterval: 15_000,
+    refetchInterval: useRefetchInterval(15_000),
   });
 }
 
@@ -477,7 +527,7 @@ export function useRolloutHistory(sel: { ctx: string; kind: string; namespace?: 
       return apiFetch<RolloutRevision[]>(`/api/contexts/${encodeURIComponent(sel!.ctx)}/detail/rollout-history?${params}`);
     },
     enabled: !!sel && (sel.kind === 'Deployment' || sel.kind === 'StatefulSet'),
-    refetchInterval: 15_000,
+    refetchInterval: useRefetchInterval(15_000),
   });
 }
 
@@ -498,7 +548,7 @@ export function useNodeMetrics(ctx: string) {
   return useQuery({
     queryKey: ['metrics-nodes', ctx],
     queryFn: () => apiFetch<MetricsSnapshot>(`/api/contexts/${encodeURIComponent(ctx)}/metrics/nodes`),
-    refetchInterval: 20_000,
+    refetchInterval: useRefetchInterval(20_000),
   });
 }
 
@@ -517,7 +567,7 @@ export function useResourceMetrics(contexts: string[], kind: 'pods' | 'nodes') {
       return result;
     },
     enabled: contexts.length > 0,
-    refetchInterval: 20_000,
+    refetchInterval: useRefetchInterval(20_000),
   });
 }
 
@@ -530,7 +580,7 @@ export function useMetricsHistory(sel: { ctx: string; kind: 'pod' | 'node'; name
       return apiFetch<MetricsHistoryResponse>(`/api/contexts/${encodeURIComponent(sel!.ctx)}/metrics/history?${params}`);
     },
     enabled: !!sel,
-    refetchInterval: 20_000,
+    refetchInterval: useRefetchInterval(20_000),
   });
 }
 
@@ -538,7 +588,7 @@ export function useOverview(ctx: string) {
   return useQuery({
     queryKey: ['overview', ctx],
     queryFn: () => apiFetch<ClusterOverview>(`/api/contexts/${encodeURIComponent(ctx)}/overview`),
-    refetchInterval: 10_000,
+    refetchInterval: useRefetchInterval(10_000),
   });
 }
 
@@ -593,7 +643,7 @@ export function useTopologyGraphs(contexts: string[], namespaces: string[], focu
       return graphs;
     },
     enabled: contexts.length > 0,
-    refetchInterval: 20_000,
+    refetchInterval: useRefetchInterval(20_000),
   });
 }
 
@@ -612,7 +662,7 @@ export function useHelmReleases(contexts: string[]) {
       return all.flat();
     },
     enabled: contexts.length > 0,
-    refetchInterval: 30_000,
+    refetchInterval: useRefetchInterval(30_000),
   });
 }
 
@@ -672,7 +722,7 @@ export function usePortForwards() {
   return useQuery({
     queryKey: ['portforwards'],
     queryFn: () => apiFetch<PortForwardInfo[]>('/api/portforwards'),
-    refetchInterval: 30_000,
+    refetchInterval: useRefetchInterval(30_000),
   });
 }
 

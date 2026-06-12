@@ -15,6 +15,7 @@ import type { LogServerMessage } from '@kubedeck/shared';
 import { wsUrl } from '../api/http.js';
 import { useDockStore, type LogsTab } from '../state/dock.js';
 import { useLogPrefsStore, type TsMode } from '../state/log-prefs.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 import { markSegs, parseLine, stripAnsi, type Seg } from './log-format.js';
 
 interface LogLine {
@@ -27,16 +28,19 @@ interface LogLine {
 
 const POD_COLORS = ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e', '#bb9af7', '#7dcfff', '#ff9e64', '#73daca'];
 const MAX_LINES = 20_000;
-const ROW_HEIGHT = 20;
+/** Virtualized row height for the default 12px mono font; scales with it. */
+function rowHeightFor(fontSize: number): number {
+  return fontSize + 8;
+}
 type LogTimeMode = 'live' | '10m' | '1h' | '6h' | '24h' | 'terminated';
 
-const TIME_OPTIONS: Array<{ value: LogTimeMode; label: string; params: { follow: boolean; tailLines?: number; sinceSeconds?: number; previous?: boolean } }> = [
-  { value: 'live', label: 'Live tail', params: { follow: true, tailLines: 500 } },
+const TIME_OPTIONS: Array<{ value: LogTimeMode; label: string; params: { follow: boolean; tail?: boolean; sinceSeconds?: number; previous?: boolean } }> = [
+  { value: 'live', label: 'Live tail', params: { follow: true, tail: true } },
   { value: '10m', label: '10m ago', params: { follow: false, sinceSeconds: 10 * 60 } },
   { value: '1h', label: '1h ago', params: { follow: false, sinceSeconds: 60 * 60 } },
   { value: '6h', label: '6h ago', params: { follow: false, sinceSeconds: 6 * 60 * 60 } },
   { value: '24h', label: '24h ago', params: { follow: false, sinceSeconds: 24 * 60 * 60 } },
-  { value: 'terminated', label: 'Terminated', params: { follow: false, tailLines: 500, previous: true } },
+  { value: 'terminated', label: 'Terminated', params: { follow: false, tail: true, previous: true } },
 ];
 
 const CLS_COLORS: Record<NonNullable<Seg['cls']>, string> = {
@@ -102,6 +106,9 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
   const [viewHeight, setViewHeight] = useState(400);
 
   const { wrap, tsMode, highlight, setWrap, cycleTsMode, setHighlight } = useLogPrefsStore();
+  const monoFontSize = useUiPrefsStore((s) => s.monoFontSize);
+  const defaultTailLines = useUiPrefsStore((s) => s.defaultTailLines);
+  const rowHeight = rowHeightFor(monoFontSize);
   const maximized = useDockStore((s) => s.maximized);
   const setMaximized = useDockStore((s) => s.setMaximized);
 
@@ -125,7 +132,7 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
         container: tab.container ?? '',
         previous: modeParams.previous ?? false,
         follow: modeParams.follow,
-        tailLines: modeParams.tailLines ?? tab.tailLines,
+        tailLines: modeParams.tail ? (tab.tailLines ?? defaultTailLines) : tab.tailLines,
         sinceSeconds: modeParams.sinceSeconds ?? tab.sinceSeconds,
       }),
     );
@@ -195,10 +202,10 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
       if (wrap) {
         el.querySelector(`[data-idx="${idx}"]`)?.scrollIntoView({ block: 'center' });
       } else {
-        el.scrollTop = idx * ROW_HEIGHT - el.clientHeight / 2;
+        el.scrollTop = idx * rowHeight - el.clientHeight / 2;
       }
     },
-    [wrap],
+    [wrap, rowHeight],
   );
 
   const findStep = useCallback(
@@ -250,8 +257,8 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
   }, [lines]);
 
   // Simple windowed rendering (nowrap) — only rows near the viewport mount.
-  const start = wrap ? 0 : Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 20);
-  const end = wrap ? visible.length : Math.min(visible.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + 20);
+  const start = wrap ? 0 : Math.max(0, Math.floor(scrollTop / rowHeight) - 20);
+  const end = wrap ? visible.length : Math.min(visible.length, Math.ceil((scrollTop + viewHeight) / rowHeight) + 20);
   const currentMatch = matches.length ? matches[cursor] : undefined;
   const showPod = tab.pods.length > 1;
 
@@ -354,9 +361,9 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
       <Box
         ref={scrollRef}
         onScroll={onScroll}
-        sx={{ flex: 1, overflow: 'auto', fontFamily: '"JetBrains Mono", monospace', fontSize: 12, bgcolor: '#151518', color: '#d4d4da' }}
+        sx={{ flex: 1, overflow: 'auto', fontFamily: '"JetBrains Mono", monospace', fontSize: monoFontSize, bgcolor: '#151518', color: '#d4d4da' }}
       >
-        <Box sx={wrap ? undefined : { height: visible.length * ROW_HEIGHT, position: 'relative' }}>
+        <Box sx={wrap ? undefined : { height: visible.length * rowHeight, position: 'relative' }}>
           {visible.slice(start, end).map((l, i) => {
             const idx = start + i;
             return (
@@ -371,6 +378,7 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
                 highlight={highlight}
                 find={find}
                 isCurrent={idx === currentMatch}
+                rowHeight={rowHeight}
               />
             );
           })}
@@ -390,9 +398,10 @@ interface LineRowProps {
   highlight: boolean;
   find: string;
   isCurrent: boolean;
+  rowHeight: number;
 }
 
-const LineRow = memo(function LineRow({ line, idx, wrap, showPod, podColor, tsMode, highlight, find, isCurrent }: LineRowProps) {
+const LineRow = memo(function LineRow({ line, idx, wrap, showPod, podColor, tsMode, highlight, find, isCurrent, rowHeight }: LineRowProps) {
   const segs = highlight ? segsOf(line) : [{ text: strippedOf(line) }];
   const marked = find ? markSegs(segs, find) : segs;
   return (
@@ -400,8 +409,8 @@ const LineRow = memo(function LineRow({ line, idx, wrap, showPod, podColor, tsMo
       data-idx={idx}
       sx={
         wrap
-          ? { px: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-all', contentVisibility: 'auto', containIntrinsicSize: `auto ${ROW_HEIGHT}px`, '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' } }
-          : { position: 'absolute', top: idx * ROW_HEIGHT, left: 0, right: 0, height: ROW_HEIGHT, px: 1, whiteSpace: 'pre', display: 'flex', gap: 1, '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' } }
+          ? { px: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-all', contentVisibility: 'auto', containIntrinsicSize: `auto ${rowHeight}px`, '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' } }
+          : { position: 'absolute', top: idx * rowHeight, left: 0, right: 0, height: rowHeight, px: 1, whiteSpace: 'pre', display: 'flex', gap: 1, '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' } }
       }
     >
       {showPod && (
