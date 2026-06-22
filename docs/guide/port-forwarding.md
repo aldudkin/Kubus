@@ -8,7 +8,8 @@ Reach a pod or service on your laptop as if it were local — no `kubectl port-f
 window to babysit. Kubus manages forwards centrally and shows them all on one page.
 
 <figure markdown="span">
-  ![The Port Forwards page](../assets/screenshots/port-forwards.png){ .shadow }
+  ![The Port Forwards page](../assets/screenshots/port-forwards.png#only-light){ .shadow }
+  ![The Port Forwards page](../assets/screenshots/port-forwards-dark.png#only-dark){ .shadow }
   <figcaption>Every active forward in one place — click the local URL to open it.</figcaption>
 </figure>
 

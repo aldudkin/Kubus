@@ -8,7 +8,8 @@ Open settings from the **:material-cog: gear** in the top bar. Everything here i
 in your browser/app profile — there's no server-side config file to manage.
 
 <figure markdown="span">
-  ![The settings dialog](../assets/screenshots/settings.png){ .shadow }
+  ![The settings dialog](../assets/screenshots/settings.png#only-light){ .shadow }
+  ![The settings dialog](../assets/screenshots/settings-dark.png#only-dark){ .shadow }
   <figcaption>Appearance, refresh, logs and terminal — tuned to your taste.</figcaption>
 </figure>
 

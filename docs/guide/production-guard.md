@@ -14,7 +14,8 @@ Mark a cluster as **protected** and Kubus inserts a deliberate speed bump in fro
 anything destructive: you must **type the resource's name** to confirm.
 
 <figure markdown="span">
-  ![A type-to-confirm dialog on a protected cluster](../assets/screenshots/production-guard.png){ .shadow }
+  ![A type-to-confirm dialog on a protected cluster](../assets/screenshots/production-guard.png#only-light){ .shadow }
+  ![A type-to-confirm dialog on a protected cluster](../assets/screenshots/production-guard-dark.png#only-dark){ .shadow }
   <figcaption>On a protected cluster, you type the name before anything dangerous happens.</figcaption>
 </figure>
 

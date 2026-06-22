@@ -8,7 +8,8 @@ Everything in Kubus happens in a single window with four regions. Once you know 
 the whole app makes sense.
 
 <figure markdown="span">
-  ![The Kubus window, annotated](../assets/screenshots/overview.png){ .shadow }
+  ![The Kubus window, annotated](../assets/screenshots/overview.png#only-light){ .shadow }
+  ![The Kubus window, annotated](../assets/screenshots/overview-dark.png#only-dark){ .shadow }
   <figcaption>The Overview page, showing the top bar, nav drawer and content area.</figcaption>
 </figure>
 

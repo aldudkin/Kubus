@@ -9,7 +9,8 @@ clusters, namespaces or kinds. "Why does this work in staging but not prod?" usu
 its answer here.
 
 <figure markdown="span">
-  ![A side-by-side resource diff](../assets/screenshots/diff.png){ .shadow }
+  ![A side-by-side resource diff](../assets/screenshots/diff.png#only-light){ .shadow }
+  ![A side-by-side resource diff](../assets/screenshots/diff-dark.png#only-dark){ .shadow }
   <figcaption>Two objects, side by side, with the differences highlighted.</figcaption>
 </figure>
 

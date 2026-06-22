@@ -9,7 +9,8 @@ that kind, across all your selected clusters. Lists stay in sync over a WebSocke
 there's no refresh button because there's nothing to refresh.
 
 <figure markdown="span">
-  ![The Pods list](../assets/screenshots/pods.png){ .shadow }
+  ![The Pods list](../assets/screenshots/pods.png#only-light){ .shadow }
+  ![The Pods list](../assets/screenshots/pods-dark.png#only-dark){ .shadow }
   <figcaption>Live, sortable, filterable — with the right columns for each kind.</figcaption>
 </figure>
 
@@ -41,7 +42,8 @@ better, it renders each CRD's own `additionalPrinterColumns` — the same extra 
 get from `kubectl get` — as **real, sortable columns**.
 
 <figure markdown="span">
-  ![A custom resource list with printer columns](../assets/screenshots/crd-list.png){ .shadow }
+  ![A custom resource list with printer columns](../assets/screenshots/crd-list.png#only-light){ .shadow }
+  ![A custom resource list with printer columns](../assets/screenshots/crd-list-dark.png#only-dark){ .shadow }
   <figcaption>Your operators' CRDs, with their printer columns rendered as columns.</figcaption>
 </figure>
 

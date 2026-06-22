@@ -31,7 +31,8 @@ Click the **cluster switcher** in the top bar and tick one or more kubeconfig co
 Kubus reads the same contexts `kubectl config get-contexts` shows you.
 
 <figure markdown="span">
-  ![Selecting kubeconfig contexts in the cluster switcher](assets/screenshots/cluster-switcher.png){ .shadow }
+  ![Selecting kubeconfig contexts in the cluster switcher](assets/screenshots/cluster-switcher.png#only-light){ .shadow }
+  ![Selecting kubeconfig contexts in the cluster switcher](assets/screenshots/cluster-switcher-dark.png#only-dark){ .shadow }
   <figcaption>Pick any number of contexts — lists merge across all of them.</figcaption>
 </figure>
 
@@ -47,7 +48,8 @@ updates over a WebSocket watch; no refresh button needed. If you selected more t
 cluster, a **Cluster** column tells you where each row lives.
 
 <figure markdown="span">
-  ![The Pods list with live status](assets/screenshots/pods.png){ .shadow }
+  ![The Pods list with live status](assets/screenshots/pods.png#only-light){ .shadow }
+  ![The Pods list with live status](assets/screenshots/pods-dark.png#only-dark){ .shadow }
   <figcaption>Every kind — including your CRDs — with sortable, filterable columns.</figcaption>
 </figure>
 
@@ -64,7 +66,8 @@ Click a pod's name. A **details drawer** slides in with:
 - **Events**, a relationship **Map**, and (for pods) live **Metrics**.
 
 <figure markdown="span">
-  ![The resource details drawer](assets/screenshots/pod-detail.png){ .shadow }
+  ![The resource details drawer](assets/screenshots/pod-detail.png#only-light){ .shadow }
+  ![The resource details drawer](assets/screenshots/pod-detail-dark.png#only-dark){ .shadow }
   <figcaption>A human-friendly overview, plus the raw YAML when you need it.</figcaption>
 </figure>
 
@@ -88,7 +91,8 @@ across resources, kinds and pages; press ++tab++ on a result to run an action on
 type `>` to run app commands like *Toggle dark / light mode*.
 
 <figure markdown="span">
-  ![The command palette](assets/screenshots/command-palette.png){ .shadow }
+  ![The command palette](assets/screenshots/command-palette.png#only-light){ .shadow }
+  ![The command palette](assets/screenshots/command-palette-dark.png#only-dark){ .shadow }
   <figcaption>++ctrl+k++ — search anything, act on anything, never touch the mouse.</figcaption>
 </figure>
 

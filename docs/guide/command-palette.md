@@ -9,7 +9,8 @@ resource, run any action on it, or jump to any page — without lifting your han
 keyboard.
 
 <figure markdown="span">
-  ![The command palette](../assets/screenshots/command-palette.png){ .shadow }
+  ![The command palette](../assets/screenshots/command-palette.png#only-light){ .shadow }
+  ![The command palette](../assets/screenshots/command-palette-dark.png#only-dark){ .shadow }
   <figcaption>Press ++ctrl+k++ and start typing.</figcaption>
 </figure>
 

@@ -13,7 +13,8 @@ Click the **cluster switcher** in the top bar and tick the contexts you want act
 can select **as many as you like** — Kubus talks to all of them at once.
 
 <figure markdown="span">
-  ![The cluster switcher with several contexts selected](../assets/screenshots/cluster-switcher.png){ .shadow }
+  ![The cluster switcher with several contexts selected](../assets/screenshots/cluster-switcher.png#only-light){ .shadow }
+  ![The cluster switcher with several contexts selected](../assets/screenshots/cluster-switcher-dark.png#only-dark){ .shadow }
   <figcaption>Every context from your kubeconfig, ready to select.</figcaption>
 </figure>
 
@@ -32,7 +33,8 @@ This is where Kubus earns its keep. When two or more clusters are selected:
   cluster the resource belongs to — there's no accidental fan-out.
 
 <figure markdown="span">
-  ![A merged Pods list with a cluster column](../assets/screenshots/pods.png){ .shadow }
+  ![A merged Pods list with a cluster column](../assets/screenshots/pods.png#only-light){ .shadow }
+  ![A merged Pods list with a cluster column](../assets/screenshots/pods-dark.png#only-dark){ .shadow }
   <figcaption>One list, many clusters — the Cluster column keeps things clear.</figcaption>
 </figure>
 

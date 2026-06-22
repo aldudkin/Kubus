@@ -9,7 +9,8 @@ you — scheduling decisions, image pulls, probe failures, evictions — dedupli
 filterable, across every selected cluster.
 
 <figure markdown="span">
-  ![The cluster-wide events timeline](../assets/screenshots/events.png){ .shadow }
+  ![The cluster-wide events timeline](../assets/screenshots/events.png#only-light){ .shadow }
+  ![The cluster-wide events timeline](../assets/screenshots/events-dark.png#only-dark){ .shadow }
   <figcaption>Every event, deduplicated, with a warnings-only switch for triage.</figcaption>
 </figure>
 

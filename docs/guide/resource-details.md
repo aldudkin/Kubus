@@ -8,7 +8,8 @@ Click any resource name and a **details drawer** slides in from the right. It gi
 human-friendly view *and* the raw YAML, without leaving the list you're on.
 
 <figure markdown="span">
-  ![The resource details drawer for a pod](../assets/screenshots/pod-detail.png){ .shadow }
+  ![The resource details drawer for a pod](../assets/screenshots/pod-detail.png#only-light){ .shadow }
+  ![The resource details drawer for a pod](../assets/screenshots/pod-detail-dark.png#only-dark){ .shadow }
   <figcaption>A readable overview up top, with tabs for YAML, events, map and metrics.</figcaption>
 </figure>
 

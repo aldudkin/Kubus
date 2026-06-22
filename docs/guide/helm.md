@@ -8,7 +8,8 @@ Kubus speaks Helm natively — **no `helm` binary required**. The server reads a
 release secrets directly, so you can inspect and manage releases from the UI.
 
 <figure markdown="span">
-  ![The Helm releases list](../assets/screenshots/helm-list.png){ .shadow }
+  ![The Helm releases list](../assets/screenshots/helm-list.png#only-light){ .shadow }
+  ![The Helm releases list](../assets/screenshots/helm-list-dark.png#only-dark){ .shadow }
   <figcaption>Every release across your selected clusters, with status and versions.</figcaption>
 </figure>
 
@@ -22,7 +23,8 @@ shows a Cluster column when several are selected. Click a release to open it.
 ## Inside a release
 
 <figure markdown="span">
-  ![A Helm release detail with its tabs](../assets/screenshots/helm-detail.png){ .shadow }
+  ![A Helm release detail with its tabs](../assets/screenshots/helm-detail.png#only-light){ .shadow }
+  ![A Helm release detail with its tabs](../assets/screenshots/helm-detail-dark.png#only-dark){ .shadow }
   <figcaption>Values, computed values, manifest, history and notes — all read-only and safe to browse.</figcaption>
 </figure>
 

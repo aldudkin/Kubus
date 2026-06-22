@@ -1,24 +1,22 @@
 // Screenshot capture for the Kubus docs.
-// Usage: KUBUS_URL="http://127.0.0.1:3001/?token=..." node hack/capture.mjs [only]
+// Usage: KUBUS_URL="http://127.0.0.1:3001/?token=..." [THEME=dark] node hack/capture.mjs [only]
+//   THEME=dark captures the dark variants, written as <name>-dark.png.
 import { chromium } from 'playwright-core';
 
 const URL = process.env.KUBUS_URL;
 const ONLY = process.argv[2]; // optional: capture only shots whose name includes this
+const THEME = process.env.THEME === 'dark' ? 'dark' : 'light';
+const SUFFIX = THEME === 'dark' ? '-dark' : '';
 const OUT = 'docs/assets/screenshots';
 const VIEW = { width: 1480, height: 920 };
 const SCALE = 2;
 
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
 
-function storeScript(selected, namespaces = [], contextSettings = {}) {
-  const val = JSON.stringify({ state: { selected, namespaces, themeMode: 'light', contextSettings }, version: 0 });
-  return (v) => localStorage.setItem('kubus-clusters', v);
-}
-
 async function newPage(selected, namespaces = [], contextSettings = {}) {
-  const ctx = await browser.newContext({ viewport: VIEW, deviceScaleFactor: SCALE });
+  const ctx = await browser.newContext({ viewport: VIEW, deviceScaleFactor: SCALE, colorScheme: THEME });
   const page = await ctx.newPage();
-  const val = JSON.stringify({ state: { selected, namespaces, themeMode: 'light', contextSettings }, version: 0 });
+  const val = JSON.stringify({ state: { selected, namespaces, themeMode: THEME, contextSettings }, version: 0 });
   await page.addInitScript((v) => localStorage.setItem('kubus-clusters', v), val);
   await page.goto(URL, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1200);
@@ -26,7 +24,7 @@ async function newPage(selected, namespaces = [], contextSettings = {}) {
 }
 
 const nav = (page, label) => page.getByText(label, { exact: true }).first().click();
-const shot = (page, name) => page.screenshot({ path: `${OUT}/${name}.png` });
+const shot = (page, name) => page.screenshot({ path: `${OUT}/${name}${SUFFIX}.png` });
 
 const shots = [];
 const add = (name, fn) => shots.push({ name, fn });

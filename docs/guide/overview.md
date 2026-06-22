@@ -8,7 +8,8 @@ The **Overview** is the first thing you see, and the fastest way to answer "is a
 on fire?" It summarises the health of every selected cluster on one screen.
 
 <figure markdown="span">
-  ![The Overview dashboard](../assets/screenshots/overview.png){ .shadow }
+  ![The Overview dashboard](../assets/screenshots/overview.png#only-light){ .shadow }
+  ![The Overview dashboard](../assets/screenshots/overview-dark.png#only-dark){ .shadow }
   <figcaption>One card stack per cluster — counts, usage, and what's broken.</figcaption>
 </figure>
 

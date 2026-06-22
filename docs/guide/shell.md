@@ -10,7 +10,8 @@ opening as a tab in the [bottom dock](the-window.md#bottom-dock) — a full
 resize.
 
 <figure markdown="span">
-  ![A container shell open in the dock](../assets/screenshots/shell.png){ .shadow }
+  ![A container shell open in the dock](../assets/screenshots/shell.png#only-light){ .shadow }
+  ![A container shell open in the dock](../assets/screenshots/shell-dark.png#only-dark){ .shadow }
   <figcaption>A genuine interactive terminal, straight into a container.</figcaption>
 </figure>
 
@@ -54,7 +55,8 @@ namespace, giving you a root shell on the machine.
 - **Node** ⋮ menu → **Node shell…**
 
 <figure markdown="span">
-  ![A node shell session](../assets/screenshots/shell.png){ .shadow }
+  ![A node shell session](../assets/screenshots/shell.png#only-light){ .shadow }
+  ![A node shell session](../assets/screenshots/shell-dark.png#only-dark){ .shadow }
   <figcaption>A root shell on the node, via a privileged helper pod.</figcaption>
 </figure>
 

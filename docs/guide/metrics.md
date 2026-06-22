@@ -8,7 +8,8 @@ Kubus reads CPU and memory from **metrics-server** and keeps a short rolling his
 you get little trend charts rather than a single instantaneous number.
 
 <figure markdown="span">
-  ![CPU and memory history charts for a pod](../assets/screenshots/metrics.png){ .shadow }
+  ![CPU and memory history charts for a pod](../assets/screenshots/metrics.png#only-light){ .shadow }
+  ![CPU and memory history charts for a pod](../assets/screenshots/metrics-dark.png#only-dark){ .shadow }
   <figcaption>Live CPU/memory history right in the details drawer.</figcaption>
 </figure>
 

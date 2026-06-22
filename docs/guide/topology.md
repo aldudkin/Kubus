@@ -10,7 +10,8 @@ ConfigMaps and Secrets they mount. Sometimes a picture is the fastest way to und
 what's wired to what.
 
 <figure markdown="span">
-  ![The topology graph](../assets/screenshots/topology.png){ .shadow }
+  ![The topology graph](../assets/screenshots/topology.png#only-light){ .shadow }
+  ![The topology graph](../assets/screenshots/topology-dark.png#only-dark){ .shadow }
   <figcaption>Resources as nodes, ownership and references as edges.</figcaption>
 </figure>
 

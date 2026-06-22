@@ -9,7 +9,8 @@ view — so a Deployment's logs read as a single, colour-coded stream instead of
 separate `kubectl logs -f` windows.
 
 <figure markdown="span">
-  ![The aggregated log viewer](../assets/screenshots/logs.png){ .shadow }
+  ![The aggregated log viewer](../assets/screenshots/logs.png#only-light){ .shadow }
+  ![The aggregated log viewer](../assets/screenshots/logs-dark.png#only-dark){ .shadow }
   <figcaption>Logs from every pod of a workload, each pod in its own colour.</figcaption>
 </figure>
 

@@ -37,7 +37,8 @@ get every revision with its images and change-cause, the current one clearly mar
 what you're rolling back to first.
 
 <figure markdown="span">
-  ![Rollout history with rollback buttons](../assets/screenshots/rollout-history.png){ .shadow }
+  ![Rollout history with rollback buttons](../assets/screenshots/rollout-history.png#only-light){ .shadow }
+  ![Rollout history with rollback buttons](../assets/screenshots/rollout-history-dark.png#only-dark){ .shadow }
   <figcaption>Browse revisions, then roll back to any of them.</figcaption>
 </figure>
 
