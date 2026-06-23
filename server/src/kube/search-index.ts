@@ -10,6 +10,7 @@ const LIST_PAGE_SIZE = 1_000;
 const START_CONCURRENCY = 8;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
+const WATCH_FORBIDDEN_RELIST_MS = 60_000;
 const CRD_RECONCILE_DEBOUNCE_MS = 1_000;
 const DISCOVERY_SAFETY_RECONCILE_MS = 5 * 60_000;
 const METADATA_LIST_ACCEPT = 'application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json';
@@ -90,20 +91,29 @@ function shouldIndexKind(kind: ResourceKindInfo): boolean {
   return !!kind.custom || BUILTIN_RESOURCE_SEARCH_KINDS.has(gvrKey(kind));
 }
 
-function isGone(err: unknown): boolean {
-  const code =
+function apiStatusCode(err: unknown): number | undefined {
+  return (
     (err as { code?: number })?.code ??
     (err as { statusCode?: number })?.statusCode ??
-    ((err as { body?: { code?: unknown } })?.body?.code as number | undefined);
-  return code === 410;
+    ((err as { body?: { code?: unknown } })?.body?.code as number | undefined)
+  );
+}
+
+function isGone(err: unknown): boolean {
+  return apiStatusCode(err) === 410;
+}
+
+function isForbidden(err: unknown): boolean {
+  return apiStatusCode(err) === 403;
 }
 
 function isUnavailable(err: unknown): boolean {
-  const code =
-    (err as { code?: number })?.code ??
-    (err as { statusCode?: number })?.statusCode ??
-    ((err as { body?: { code?: unknown } })?.body?.code as number | undefined);
+  const code = apiStatusCode(err);
   return code === 403 || code === 404;
+}
+
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: string })?.name === 'AbortError';
 }
 
 function apiException(status: number, message: string, body: unknown): ApiException<unknown> {
@@ -370,7 +380,15 @@ export class ResourceSearchIndex {
         if (!state.rv) await this.relistKind(state);
         if (state.unavailable) return;
         backoff = MIN_BACKOFF_MS;
-        await this.watchKindOnce(state);
+        try {
+          await this.watchKindOnce(state);
+        } catch (err) {
+          if (isForbidden(err)) {
+            await this.listOnlyKindLoop(state);
+            return;
+          }
+          throw err;
+        }
       } catch (err) {
         if (!state.running || this.disposed) return;
         if (isUnavailable(err)) {
@@ -389,9 +407,39 @@ export class ResourceSearchIndex {
         } else {
           this.log.debug({ gvr: state.key, err: String(err) }, 'search index watch failed');
         }
-        await delay(backoff, undefined, { signal: this.lifecycleAbort.signal, ref: false });
+        if (!(await this.waitForRetry(backoff))) return;
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }
+    }
+  }
+
+  private async listOnlyKindLoop(state: IndexedKindState): Promise<void> {
+    this.log.debug({ gvr: state.key }, 'search index watch forbidden, falling back to periodic relist');
+    while (state.running && !this.disposed) {
+      if (!(await this.waitForRetry(WATCH_FORBIDDEN_RELIST_MS))) return;
+      if (!state.running || this.disposed) return;
+      try {
+        await this.relistKind(state);
+      } catch (err) {
+        if (!state.running || this.disposed) return;
+        if (isUnavailable(err)) {
+          state.unavailable = true;
+          this.removeKindEntries(state);
+          this.log.debug({ gvr: state.key, err: String(err) }, 'search index resource unavailable');
+          return;
+        }
+        this.log.debug({ gvr: state.key, err: String(err) }, 'search index periodic relist failed');
+      }
+    }
+  }
+
+  private async waitForRetry(ms: number): Promise<boolean> {
+    try {
+      await delay(ms, undefined, { signal: this.lifecycleAbort.signal, ref: false });
+      return !this.disposed;
+    } catch (err) {
+      if (isAbortError(err)) return false;
+      throw err;
     }
   }
 
@@ -491,7 +539,7 @@ export class ResourceSearchIndex {
         }
         if (isUnavailable(err)) return;
         this.log.debug({ err: String(err) }, 'search index CRD watch failed');
-        await delay(backoff, undefined, { signal: this.lifecycleAbort.signal, ref: false });
+        if (!(await this.waitForRetry(backoff))) return;
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }
     }
