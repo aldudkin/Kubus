@@ -44,8 +44,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release view --repo "$GH_REPO" --json tagName,name,url,publishedAt > /tmp/kubus-latest-release.json || rm -f /tmp/kubus-latest-release.json
-          node hack/write-latest-manifest.mjs /tmp/kubus-latest-release.json site/latest.json
+          if gh release view --repo "$GH_REPO" --json tagName,name,url,publishedAt > /tmp/kubus-latest-release.json; then
+            node hack/write-latest-manifest.mjs /tmp/kubus-latest-release.json site/latest.json
+          else
+            echo "No release metadata available; skipping update manifest."
+            rm -f site/latest.json
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
