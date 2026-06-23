@@ -17,7 +17,7 @@ import {
   type ApiConstructor,
   type ApiType,
 } from '@kubernetes/client-node';
-import type { ContextInfo } from '@kubus/shared';
+import type { ContextInfo, TestConnectionResponse } from '@kubus/shared';
 import { RawClient } from './raw-client.js';
 import { DiscoveryCache } from './discovery.js';
 import { WatcherRegistry } from './watcher.js';
@@ -26,6 +26,12 @@ import { applyEnvProxy } from './connection.js';
 import { patchClusterEntry, patchUserEntry, writeKubeconfig, type ClusterEditPatch } from './kubeconfig-file.js';
 import { HttpProblem } from '../util/errors.js';
 import type { ClusterAuthType } from '@kubus/shared';
+
+const BACKGROUND_HEALTH_INTERVAL_MS = 60_000;
+const BACKGROUND_HEALTH_TIMEOUT_MS = 8_000;
+const BACKGROUND_HEALTH_CONCURRENCY = 4;
+
+type CachedContextHealth = Pick<ContextInfo, 'health' | 'healthMessage' | 'kubernetesVersion'>;
 
 function authTypeOf(user: ReturnType<KubeConfig['getUser']>): ClusterAuthType {
   if (!user) return 'none';
@@ -47,6 +53,7 @@ export class ClusterHandle {
   health: ContextInfo['health'] = 'connecting';
   healthMessage?: string;
   kubernetesVersion?: string;
+  activated = false;
 
   private clients = new Map<string, unknown>();
 
@@ -117,6 +124,8 @@ export class ClusterHandle {
 
   /** Start background machinery used by the overview dashboard + metrics. */
   activate(): void {
+    if (this.activated) return;
+    this.activated = true;
     this.metricsPoller.start();
     // Pin overview watchers (never released; cheap and shared with the UI).
     this.watchers.acquire('', 'v1', 'pods');
@@ -136,6 +145,9 @@ export class ClusterManager extends EventEmitter {
   private kc = new KubeConfig();
   private handles = new Map<string, ClusterHandle>();
   private fsWatchers: fs.FSWatcher[] = [];
+  private healthCache = new Map<string, CachedContextHealth>();
+  private healthTimer?: NodeJS.Timeout;
+  private healthRun?: Promise<void>;
   /** Cluster names whose proxy-url was injected from env vars (not the kubeconfig). */
   private envProxyClusters = new Set<string>();
 
@@ -146,6 +158,9 @@ export class ClusterManager extends EventEmitter {
     super();
     this.loadKubeconfig();
     this.watchKubeconfigFiles();
+    this.healthTimer = setInterval(() => this.refreshCachedHealth(), BACKGROUND_HEALTH_INTERVAL_MS);
+    this.healthTimer.unref();
+    this.refreshCachedHealth();
   }
 
   private loadKubeconfig(): void {
@@ -219,6 +234,10 @@ export class ClusterManager extends EventEmitter {
         this.handles.delete(name);
       }
     }
+    for (const name of this.healthCache.keys()) {
+      if (!valid.has(name)) this.healthCache.delete(name);
+    }
+    this.refreshCachedHealth();
     this.emit('contexts-changed');
   }
 
@@ -226,6 +245,7 @@ export class ClusterManager extends EventEmitter {
     const current = this.kc.getCurrentContext();
     return this.kc.getContexts().map((c) => {
       const handle = this.handles.get(c.name);
+      const cachedHealth = this.healthCache.get(c.name);
       const cluster = this.kc.getCluster(c.cluster);
       const user = this.kc.getUser(c.user);
       return {
@@ -235,10 +255,10 @@ export class ClusterManager extends EventEmitter {
         namespace: c.namespace ?? undefined,
         server: cluster?.server,
         current: c.name === current,
-        health: handle?.health ?? 'unknown',
-        healthMessage: handle?.healthMessage,
+        health: handle?.health ?? cachedHealth?.health ?? 'unknown',
+        healthMessage: handle?.healthMessage ?? cachedHealth?.healthMessage,
         active: !!handle,
-        kubernetesVersion: handle?.kubernetesVersion,
+        kubernetesVersion: handle?.kubernetesVersion ?? cachedHealth?.kubernetesVersion,
         proxyUrl: cluster?.proxyUrl,
         proxyFromEnv: this.envProxyClusters.has(c.cluster) || undefined,
         tlsServerName: cluster?.tlsServerName,
@@ -267,19 +287,82 @@ export class ClusterManager extends EventEmitter {
   }
 
   /** One-shot connectivity probe without persisting a handle (for "Test connection"). */
-  async test(contextName: string): Promise<{ health: 'connected' | 'error'; healthMessage?: string; kubernetesVersion?: string }> {
+  async test(contextName: string): Promise<TestConnectionResponse> {
     if (!this.kc.getContexts().some((c) => c.name === contextName)) {
       throw new HttpProblem(404, `context "${contextName}" not found in kubeconfig`, 'NotFound');
     }
+    const result = await this.probeContext(contextName, BACKGROUND_HEALTH_TIMEOUT_MS);
+    if (this.setCachedHealth(contextName, result)) this.emit('contexts-changed');
+    return result;
+  }
+
+  private async probeContext(contextName: string, timeoutMs: number): Promise<TestConnectionResponse> {
     const kc = new KubeConfig();
     kc.loadFromString(this.kc.exportConfig());
     kc.setCurrentContext(contextName);
+    const raw = new RawClient(kc);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    timeout.unref();
     try {
-      const info = await kc.makeApiClient(VersionApi).getCode();
+      const info = await raw.json<{ gitVersion?: string }>('/version', { signal: controller.signal });
       return { health: 'connected', kubernetesVersion: info.gitVersion };
     } catch (err) {
-      return { health: 'error', healthMessage: err instanceof Error ? err.message : String(err) };
+      const message = err instanceof Error && err.name === 'AbortError' ? `timed out after ${timeoutMs / 1000}s` : err instanceof Error ? err.message : String(err);
+      return { health: 'error', healthMessage: message };
+    } finally {
+      clearTimeout(timeout);
     }
+  }
+
+  private setCachedHealth(contextName: string, next: CachedContextHealth): boolean {
+    const prev = this.healthCache.get(contextName);
+    const cacheChanged = prev?.health !== next.health || prev.healthMessage !== next.healthMessage || prev.kubernetesVersion !== next.kubernetesVersion;
+    const handle = this.handles.get(contextName);
+    let handleChanged = false;
+    if (handle?.activated) {
+      handleChanged = handle.health !== next.health || handle.healthMessage !== next.healthMessage || handle.kubernetesVersion !== next.kubernetesVersion;
+      handle.health = next.health;
+      handle.healthMessage = next.healthMessage;
+      handle.kubernetesVersion = next.kubernetesVersion;
+    }
+    if (cacheChanged) this.healthCache.set(contextName, next);
+    return cacheChanged || handleChanged;
+  }
+
+  private refreshCachedHealth(): void {
+    if (this.healthRun) return;
+    this.healthRun = this.refreshCachedHealthNow().finally(() => {
+      this.healthRun = undefined;
+    });
+  }
+
+  private async refreshCachedHealthNow(): Promise<void> {
+    const names = this.kc.getContexts().map((c) => c.name);
+    if (!names.length) return;
+
+    let changed = false;
+    for (const name of names) {
+      if (!this.healthCache.has(name) && !this.handles.has(name)) {
+        changed = this.setCachedHealth(name, { health: 'connecting' }) || changed;
+      }
+    }
+    if (changed) this.emit('contexts-changed');
+    changed = false;
+
+    let next = 0;
+    const workers = Array.from({ length: Math.min(BACKGROUND_HEALTH_CONCURRENCY, names.length) }, async () => {
+      for (;;) {
+        const name = names[next++];
+        if (name === undefined) return;
+        const result = await this.probeContext(name, BACKGROUND_HEALTH_TIMEOUT_MS);
+        if (this.kc.getContexts().some((c) => c.name === name)) {
+          changed = this.setCachedHealth(name, result) || changed;
+        }
+      }
+    });
+    await Promise.all(workers);
+    if (changed) this.emit('contexts-changed');
   }
 
   /**
@@ -380,6 +463,7 @@ export class ClusterManager extends EventEmitter {
   }
 
   dispose(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
     for (const w of this.fsWatchers) w.close();
     for (const handle of this.handles.values()) handle.dispose();
     this.handles.clear();

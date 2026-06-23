@@ -17,15 +17,33 @@ import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import CircleIcon from '@mui/icons-material/Circle';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import ShieldIcon from '@mui/icons-material/Shield';
+import type { ContextHealth, ContextInfo } from '@kubus/shared';
 import { useConnectContext, useContexts } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 
-const HEALTH_COLOR: Record<string, 'success' | 'error' | 'warning' | 'disabled'> = {
+const HEALTH_COLOR: Record<ContextHealth, 'success' | 'error' | 'warning' | 'disabled'> = {
   connected: 'success',
   error: 'error',
   connecting: 'warning',
   unknown: 'disabled',
 };
+
+function healthTitle(c: ContextInfo): string {
+  if (c.health === 'connected') return c.kubernetesVersion ? `Connected · ${c.kubernetesVersion}` : 'Connected';
+  if (c.health === 'connecting') return 'Checking connectivity';
+  if (c.health === 'error') return c.healthMessage ?? 'Connection failed';
+  return 'Not checked yet';
+}
+
+function selectedHealth(contexts: ContextInfo[] | undefined, selected: string[]): ContextHealth | undefined {
+  if (!selected.length) return undefined;
+  const byName = new Map((contexts ?? []).map((c) => [c.name, c.health]));
+  const healths = selected.map((name) => byName.get(name) ?? 'unknown');
+  if (healths.includes('error')) return 'error';
+  if (healths.includes('connecting')) return 'connecting';
+  if (healths.includes('unknown')) return 'unknown';
+  return 'connected';
+}
 
 export function ClusterSwitcher() {
   const { data: contexts } = useContexts();
@@ -64,11 +82,16 @@ export function ClusterSwitcher() {
   const only = selected.length === 1 ? selected[0] : undefined;
   const label = selected.length === 0 ? 'Select clusters' : (only ?? `${selected.length} clusters`);
   const onlyProtected = only ? !!contextSettings[only]?.protected : false;
+  const selectedConnectivity = selectedHealth(contexts, selected);
 
   return (
     <>
       <Button variant="outlined" color="inherit" endIcon={<KeyboardArrowDownIcon />} onClick={(e) => setAnchor(e.currentTarget)}>
-        {selected.length > 0 && <CircleIcon color="success" sx={{ fontSize: 10, mr: 1 }} />}
+        {selectedConnectivity && (
+          <Tooltip title={selected.length === 1 ? `Connectivity: ${selectedConnectivity}` : `Selected clusters: ${selectedConnectivity}`}>
+            <CircleIcon color={HEALTH_COLOR[selectedConnectivity]} sx={{ fontSize: 10, mr: 1 }} />
+          </Tooltip>
+        )}
         {label}
         {onlyProtected && <ShieldIcon sx={{ fontSize: 14, ml: 0.75, opacity: 0.7 }} />}
       </Button>
@@ -82,8 +105,8 @@ export function ClusterSwitcher() {
                 {connect.isPending && connect.variables?.ctx === c.name ? (
                   <CircularProgress size={12} />
                 ) : (
-                  <Tooltip title={c.healthMessage ?? c.health}>
-                    <CircleIcon color={HEALTH_COLOR[c.health] ?? 'disabled'} sx={{ fontSize: 12 }} />
+                  <Tooltip title={healthTitle(c)}>
+                    <CircleIcon color={HEALTH_COLOR[c.health]} sx={{ fontSize: 12 }} />
                   </Tooltip>
                 )}
               </ListItemIcon>
