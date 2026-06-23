@@ -70,6 +70,31 @@ export function nodeRoles(node: KubeObject): string {
     .join(',');
 }
 
+export function nodeAddress(node: KubeObject, type: string): string {
+  const addresses = (node.status as { addresses?: Array<{ type: string; address: string }> } | undefined)?.addresses ?? [];
+  return addresses.find((a) => a.type === type)?.address ?? '';
+}
+
+export function nodeTaints(node: KubeObject): string {
+  const taints = (node.spec as { taints?: Array<{ key?: string; value?: string; effect?: string }> } | undefined)?.taints ?? [];
+  return taints
+    .map((t) => `${t.key ?? ''}${t.value ? `=${t.value}` : ''}${t.effect ? `:${t.effect}` : ''}`)
+    .filter(Boolean)
+    .join(', ');
+}
+
+export function nodeConditions(node: KubeObject): string {
+  const conditions = (node.status as { conditions?: Array<{ type: string; status: string }> } | undefined)?.conditions ?? [];
+  return conditions
+    .filter((c) => c.status !== nodeGoodConditionStatus(c.type))
+    .map((c) => `${c.type}=${c.status}`)
+    .join(', ');
+}
+
+function nodeGoodConditionStatus(type: string): string {
+  return type === 'Ready' ? 'True' : 'False';
+}
+
 export function servicePorts(svc: KubeObject): string {
   const ports = (svc.spec as { ports?: Array<{ port: number; protocol?: string; nodePort?: number }> })?.ports ?? [];
   return ports.map((p) => `${p.port}${p.nodePort ? `:${p.nodePort}` : ''}/${p.protocol ?? 'TCP'}`).join(', ');

@@ -19,11 +19,25 @@ export async function computeOverview(handle: ClusterHandle): Promise<ClusterOve
   const eventsWatcher = handle.watchers.acquire('', 'v1', 'events');
   const nodesWatcher = handle.watchers.acquire('', 'v1', 'nodes');
   const namespacesWatcher = handle.watchers.acquire('', 'v1', 'namespaces');
+  const pvsWatcher = handle.watchers.acquire('', 'v1', 'persistentvolumes');
+  const crdsWatcher = handle.watchers.acquire('apiextensions.k8s.io', 'v1', 'customresourcedefinitions');
   try {
-    await Promise.all([podsWatcher.watcher.ready(), deploysWatcher.watcher.ready(), eventsWatcher.watcher.ready(), nodesWatcher.watcher.ready(), namespacesWatcher.watcher.ready()]);
+    await Promise.all([
+      podsWatcher.watcher.ready(),
+      deploysWatcher.watcher.ready(),
+      eventsWatcher.watcher.ready(),
+      nodesWatcher.watcher.ready(),
+      namespacesWatcher.watcher.ready(),
+    ]);
+    const [persistentVolumesResult, crdsResult] = await Promise.all([
+      optionalItems(pvsWatcher.watcher),
+      optionalItems(crdsWatcher.watcher),
+    ]);
     const pods = podsWatcher.watcher.items();
     const deployments = deploysWatcher.watcher.items();
     const events = eventsWatcher.watcher.items();
+    const persistentVolumes = persistentVolumesResult.items;
+    const crds = crdsResult.items;
 
     const overview: ClusterOverview = {
       counts: {
@@ -32,6 +46,12 @@ export async function computeOverview(handle: ClusterHandle): Promise<ClusterOve
         pods: pods.length,
         podsRunning: pods.filter((p) => (p.status as { phase?: string })?.phase === 'Running').length,
         deployments: deployments.length,
+        persistentVolumes: persistentVolumes.length,
+        persistentVolumesBound: persistentVolumes.filter((pv) => (pv.status as { phase?: string } | undefined)?.phase === 'Bound').length,
+        persistentVolumesUnavailable: persistentVolumesResult.unavailable,
+        crds: crds.length,
+        crdsEstablished: crds.filter(isEstablishedCrd).length,
+        crdsUnavailable: crdsResult.unavailable,
       },
       failingPods: [],
       unavailableWorkloads: [],
@@ -140,6 +160,8 @@ export async function computeOverview(handle: ClusterHandle): Promise<ClusterOve
     eventsWatcher.release();
     nodesWatcher.release();
     namespacesWatcher.release();
+    pvsWatcher.release();
+    crdsWatcher.release();
   }
 }
 
@@ -152,4 +174,31 @@ function isRecentWarning(e: KubeObject, now: number): boolean {
   if ((e as { type?: string }).type !== 'Warning') return false;
   const t = Date.parse(eventTime(e));
   return !Number.isNaN(t) && now - t < RECENT_MS;
+}
+
+function isEstablishedCrd(crd: KubeObject): boolean {
+  const conditions = (crd.status as { conditions?: Array<{ type?: string; status?: string }> } | undefined)?.conditions ?? [];
+  return conditions.some((c) => c.type === 'Established' && c.status === 'True');
+}
+
+async function optionalItems(watcher: {
+  ready(): Promise<void>;
+  items(): KubeObject[];
+  currentState(): string;
+}): Promise<{ items: KubeObject[]; unavailable: boolean }> {
+  try {
+    await watcher.ready();
+    return { items: watcher.items(), unavailable: watcher.currentState() === 'unavailable' };
+  } catch (err) {
+    if (isOptionalWatchUnavailable(err)) return { items: [], unavailable: true };
+    throw err;
+  }
+}
+
+function isOptionalWatchUnavailable(err: unknown): boolean {
+  const code =
+    (err as { code?: number })?.code ??
+    (err as { statusCode?: number })?.statusCode ??
+    ((err as { body?: { code?: unknown } })?.body?.code as number | undefined);
+  return code === 403 || code === 404;
 }

@@ -499,6 +499,12 @@ export interface ClusterOverview {
     pods: number;
     podsRunning: number;
     deployments: number;
+    persistentVolumes: number;
+    persistentVolumesBound: number;
+    persistentVolumesUnavailable: boolean;
+    crds: number;
+    crdsEstablished: number;
+    crdsUnavailable: boolean;
   };
   failingPods: OverviewProblemPod[];
   unavailableWorkloads: OverviewWorkloadIssue[];

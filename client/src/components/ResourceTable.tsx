@@ -53,6 +53,11 @@ export function ResourceTable({
     setVisibility(Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []));
   }, [hiddenKey]);
 
+  const gridColumns = useMemo(
+    () => columns.map((column) => (column.renderCell && !column.display ? { ...column, display: 'flex' as const } : column)),
+    [columns],
+  );
+
   const filtered = useMemo(() => {
     if (!activeFilter) return rows;
     const f = activeFilter.toLowerCase();
@@ -114,7 +119,7 @@ export function ResourceTable({
       </Stack>
       <DataGrid
         rows={filtered}
-        columns={columns}
+        columns={gridColumns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
         density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
