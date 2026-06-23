@@ -8,11 +8,11 @@ import StarIcon from '@mui/icons-material/Star';
 import StarBorderIcon from '@mui/icons-material/StarBorder';
 import { useParams, useSearchParams } from 'react-router';
 import { columnsForKind, groupFromPath, groupToPath, gvkForResource, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
-import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, type ClusterRow } from '../api/queries.js';
+import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, useWatchedList, type ClusterRow } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
-import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup } from '../components/columns.js';
+import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup } from '../components/columns.js';
 import type { ResourceSelection } from '../components/ResourceDetailDrawer.js';
 import { useDetailStore } from '../state/detail.js';
 import { RowActions } from '../components/RowActions.js';
@@ -47,6 +47,8 @@ export function ResourceListPage() {
   const isPodOrNode = kind === 'Pod' || kind === 'Node';
   const { data: podMetrics } = useResourceMetrics(isPodOrNode ? selected : [], kind === 'Node' ? 'nodes' : 'pods');
   const metricsUnavailable = isPodOrNode ? selected.filter((ctx) => podMetrics?.get(ctx)?.available === false) : [];
+  const nodePods = useWatchedList(kind === 'Node' ? selected : [], '', 'v1', 'pods');
+  const nodeAllocation = useMemo(() => (kind === 'Node' ? makeNodeAllocationLookup(nodePods.rows) : undefined), [kind, nodePods.rows]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedRows, setSelectedRows] = useState<ClusterRow[]>([]);
@@ -107,7 +109,7 @@ export function ResourceListPage() {
 
   const columns = useMemo(() => {
     const ids = columnsForKind(kind, namespaced);
-    const cols = buildColumns(ids, { multiCluster: selected.length > 1, metrics: makeMetricsLookup(kind, podMetrics) });
+    const cols = buildColumns(ids, { multiCluster: selected.length > 1, metrics: makeMetricsLookup(kind, podMetrics), nodeAllocation });
     if (isCustomKind && printerCols?.length) {
       const ageIdx = cols.findIndex((c) => c.field === 'age');
       cols.splice(ageIdx === -1 ? cols.length : ageIdx, 0, ...buildCrdColumns(printerCols));
@@ -121,7 +123,7 @@ export function ResourceListPage() {
       renderCell: (p) => <RowActions target={{ ctx: p.row.ctx, group, version, plural, kind, obj: p.row.obj }} />,
     });
     return cols;
-  }, [kind, namespaced, selected.length, podMetrics, group, version, plural, isCustomKind, printerCols]);
+  }, [kind, namespaced, selected.length, podMetrics, nodeAllocation, group, version, plural, isCustomKind, printerCols]);
   const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
 
   const supportsGvr = (r: ResourceKindInfo) => r.group === group && r.version === version && r.plural === plural;

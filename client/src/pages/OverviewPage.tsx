@@ -7,6 +7,8 @@ import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import ExtensionOutlinedIcon from '@mui/icons-material/ExtensionOutlined';
 import { useNavigate } from 'react-router';
 import { useNodeMetrics, useOverview } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
@@ -61,16 +63,33 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
       {data && (
         <>
           <Grid container spacing={1.5} sx={{ mb: 2 }}>
-            <StatCard label="Nodes" value={data.counts.nodes} icon={<DnsOutlinedIcon />} />
-            <StatCard label="Namespaces" value={data.counts.namespaces} icon={<WorkspacesOutlinedIcon />} />
+            <StatCard label="Nodes" value={data.counts.nodes} icon={<DnsOutlinedIcon />} onClick={() => navigate('/r/core/v1/nodes')} />
+            <StatCard label="Namespaces" value={data.counts.namespaces} icon={<WorkspacesOutlinedIcon />} onClick={() => navigate('/r/core/v1/namespaces')} />
             <StatCard
               label="Pods"
               value={`${data.counts.podsRunning}/${data.counts.pods}`}
               sub="running"
               warn={data.counts.podsRunning < data.counts.pods}
               icon={<ViewInArOutlinedIcon />}
+              onClick={() => navigate('/r/core/v1/pods')}
             />
-            <StatCard label="Deployments" value={data.counts.deployments} icon={<RocketLaunchOutlinedIcon />} />
+            <StatCard label="Deployments" value={data.counts.deployments} icon={<RocketLaunchOutlinedIcon />} onClick={() => navigate('/r/apps/v1/deployments')} />
+            <StatCard
+              label="Persistent Volumes"
+              value={data.counts.persistentVolumesBound}
+              sub={data.counts.persistentVolumes === data.counts.persistentVolumesBound ? 'bound' : `of ${data.counts.persistentVolumes} bound`}
+              warn={data.counts.persistentVolumesBound < data.counts.persistentVolumes}
+              icon={<StorageOutlinedIcon />}
+              onClick={() => navigate('/r/core/v1/persistentvolumes')}
+            />
+            <StatCard
+              label="CRDs"
+              value={data.counts.crdsEstablished}
+              sub={data.counts.crds === data.counts.crdsEstablished ? 'active' : `of ${data.counts.crds} active`}
+              warn={data.counts.crdsEstablished < data.counts.crds}
+              icon={<ExtensionOutlinedIcon />}
+              onClick={() => navigate('/r/apiextensions.k8s.io/v1/customresourcedefinitions')}
+            />
             <StatCard
               label="Failing pods"
               value={data.failingPods.length}
@@ -87,26 +106,7 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
             />
           </Grid>
 
-          {nodeMetrics?.available && nodeMetrics.items.length > 0 && (
-            <Card variant="outlined" sx={{ mb: 2 }}>
-              <CardContent sx={{ py: 1.5 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  Node usage
-                </Typography>
-                <Stack spacing={1}>
-                  {nodeMetrics.items.map((n) => (
-                    <Box key={n.name} sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                      <Typography variant="body2" sx={{ width: 220 }} noWrap>
-                        {n.name}
-                      </Typography>
-                      <UsageBar label={`CPU ${formatCpu(n.cpuMilli)}`} pct={n.cpuCapacityMilli ? (n.cpuMilli / n.cpuCapacityMilli) * 100 : undefined} />
-                      <UsageBar label={`Mem ${formatBytes(n.memBytes)}`} pct={n.memCapacityBytes ? (n.memBytes / n.memCapacityBytes) * 100 : undefined} />
-                    </Box>
-                  ))}
-                </Stack>
-              </CardContent>
-            </Card>
-          )}
+          {data.counts.nodes > 0 && <NodeUsageCard nodeMetrics={nodeMetrics} />}
 
           {data.failingPods.length > 0 && (
             <ProblemCard title="Failing pods">
@@ -199,6 +199,42 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
   );
 }
 
+function NodeUsageCard({ nodeMetrics }: { nodeMetrics: ReturnType<typeof useNodeMetrics>['data'] }) {
+  return (
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardContent sx={{ py: 1.5 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Node usage
+        </Typography>
+        {!nodeMetrics && <LinearProgress />}
+        {nodeMetrics && !nodeMetrics.available && (
+          <Alert severity="info" variant="outlined">
+            CPU and memory usage are unavailable. Install or repair metrics-server for this cluster.
+          </Alert>
+        )}
+        {nodeMetrics?.available && nodeMetrics.items.length === 0 && (
+          <Alert severity="info" variant="outlined">
+            Waiting for node metrics.
+          </Alert>
+        )}
+        {nodeMetrics?.available && nodeMetrics.items.length > 0 && (
+          <Stack spacing={1}>
+            {nodeMetrics.items.map((n) => (
+              <Box key={n.name} sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Typography variant="body2" sx={{ width: 220 }} noWrap>
+                  {n.name}
+                </Typography>
+                <UsageBar label={`CPU ${formatCpu(n.cpuMilli)}`} pct={n.cpuCapacityMilli ? (n.cpuMilli / n.cpuCapacityMilli) * 100 : undefined} />
+                <UsageBar label={`Mem ${formatBytes(n.memBytes)}`} pct={n.memCapacityBytes ? (n.memBytes / n.memCapacityBytes) * 100 : undefined} />
+              </Box>
+            ))}
+          </Stack>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function StatCard({
   label,
   value,
@@ -219,6 +255,15 @@ function StatCard({
       <Card
         variant="outlined"
         onClick={onClick}
+        role={onClick ? 'button' : undefined}
+        tabIndex={onClick ? 0 : undefined}
+        onKeyDown={(event) => {
+          if (!onClick) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onClick();
+          }
+        }}
         sx={(theme) => ({
           height: '100%',
           cursor: onClick ? 'pointer' : 'default',

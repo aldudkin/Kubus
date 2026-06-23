@@ -1,5 +1,5 @@
 import type { GridColDef } from '@mui/x-data-grid';
-import { Tooltip } from '@mui/material';
+import { Box, LinearProgress, Tooltip, Typography } from '@mui/material';
 import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined';
 import { evalPrinterColumnPath, type KubeObject, type MetricsSnapshot, type PrinterColumn } from '@kubus/shared';
 import type { ClusterRow } from '../api/queries.js';
@@ -7,18 +7,32 @@ import { AgeCell } from './AgeCell.js';
 import { ReadyCounter } from './ReadyCounter.js';
 import { StatusChip } from './StatusChip.js';
 import { formatBytes, formatCpu } from './Sparkline.js';
-import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeRoles, nodeStatus, podSummary, servicePorts, workloadReady } from '../kube-display.js';
+import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podSummary, servicePorts, workloadReady } from '../kube-display.js';
 
-export type MetricsLookup = (ctx: string, namespace: string | undefined, name: string) => { cpuMilli: number; memBytes: number } | undefined;
+export type MetricsLookup = (ctx: string, namespace: string | undefined, name: string) => { cpuMilli: number; memBytes: number; cpuCapacityMilli?: number; memCapacityBytes?: number } | undefined;
+export type NodeAllocationLookup = (ctx: string, nodeName: string) => NodeAllocationSummary;
 
 type Col = GridColDef<ClusterRow>;
+
+interface ColumnBuildOptions {
+  multiCluster: boolean;
+  metrics?: MetricsLookup;
+  nodeAllocation?: NodeAllocationLookup;
+}
+
+export interface NodeAllocationSummary {
+  podCount: number;
+  daemonSetPodCount: number;
+  cpuRequestMilli: number;
+  memoryRequestBytes: number;
+}
 
 function obj(row: ClusterRow): KubeObject {
   return row.obj;
 }
 
 /** Build DataGrid column definitions from semantic column ids. */
-export function buildColumns(columnIds: string[], opts: { multiCluster: boolean; metrics?: MetricsLookup }): Col[] {
+export function buildColumns(columnIds: string[], opts: ColumnBuildOptions): Col[] {
   const cols: Col[] = [];
   for (const id of columnIds) {
     if (id === 'cluster' && !opts.multiCluster) continue;
@@ -28,7 +42,7 @@ export function buildColumns(columnIds: string[], opts: { multiCluster: boolean;
   return cols;
 }
 
-const COLUMN_DEFS: Record<string, (opts: { metrics?: MetricsLookup }) => Col> = {
+const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
   name: () => ({
     field: 'name',
     headerName: 'Name',
@@ -111,6 +125,99 @@ const COLUMN_DEFS: Record<string, (opts: { metrics?: MetricsLookup }) => Col> = 
     renderCell: (params) => {
       const m = opts.metrics?.(params.row.ctx, obj(params.row).metadata.namespace, obj(params.row).metadata.name);
       return m ? formatBytes(m.memBytes) : '—';
+    },
+  }),
+  nodePods: (opts) => ({
+    field: 'nodePods',
+    headerName: 'Pods',
+    width: 110,
+    type: 'number',
+    valueGetter: (_v, row) => opts.nodeAllocation?.(row.ctx, obj(row).metadata.name).podCount ?? 0,
+    renderCell: (params) => {
+      const summary = opts.nodeAllocation?.(params.row.ctx, obj(params.row).metadata.name) ?? EMPTY_NODE_ALLOCATION;
+      const podCapacity = nodeAllocatablePods(obj(params.row));
+      const text = `${summary.podCount}${summary.daemonSetPodCount ? ` (${summary.daemonSetPodCount} ds)` : ''}`;
+      return (
+        <Tooltip title={podCapacity ? `${summary.podCount} / ${podCapacity} allocatable pods` : text}>
+          <Typography variant="body2" noWrap>
+            {text}
+          </Typography>
+        </Tooltip>
+      );
+    },
+  }),
+  nodeCpuUsage: (opts) => ({
+    field: 'nodeCpuUsage',
+    headerName: 'CPU Usage',
+    width: 130,
+    type: 'number',
+    valueGetter: (_v, row) => {
+      const m = opts.metrics?.(row.ctx, undefined, obj(row).metadata.name);
+      const capacity = m?.cpuCapacityMilli ?? nodeAllocatableCpuMilli(obj(row));
+      return m && capacity ? (m.cpuMilli / capacity) * 100 : null;
+    },
+    renderCell: (params) => {
+      const m = opts.metrics?.(params.row.ctx, undefined, obj(params.row).metadata.name);
+      const capacity = m?.cpuCapacityMilli ?? nodeAllocatableCpuMilli(obj(params.row));
+      return (
+        <RatioBarCell
+          value={m && capacity ? (m.cpuMilli / capacity) * 100 : undefined}
+          label={m ? `${formatCpu(m.cpuMilli)}${capacity ? ` / ${formatCpu(capacity)}` : ''}` : undefined}
+        />
+      );
+    },
+  }),
+  nodeMemoryUsage: (opts) => ({
+    field: 'nodeMemoryUsage',
+    headerName: 'Memory Usage',
+    width: 145,
+    type: 'number',
+    valueGetter: (_v, row) => {
+      const m = opts.metrics?.(row.ctx, undefined, obj(row).metadata.name);
+      const capacity = m?.memCapacityBytes ?? nodeAllocatableMemoryBytes(obj(row));
+      return m && capacity ? (m.memBytes / capacity) * 100 : null;
+    },
+    renderCell: (params) => {
+      const m = opts.metrics?.(params.row.ctx, undefined, obj(params.row).metadata.name);
+      const capacity = m?.memCapacityBytes ?? nodeAllocatableMemoryBytes(obj(params.row));
+      return (
+        <RatioBarCell
+          value={m && capacity ? (m.memBytes / capacity) * 100 : undefined}
+          label={m ? `${formatBytes(m.memBytes)}${capacity ? ` / ${formatBytes(capacity)}` : ''}` : undefined}
+        />
+      );
+    },
+  }),
+  nodeCpuAllocation: (opts) => ({
+    field: 'nodeCpuAllocation',
+    headerName: 'CPU Allocation',
+    width: 145,
+    type: 'number',
+    valueGetter: (_v, row) => {
+      const allocatable = nodeAllocatableCpuMilli(obj(row));
+      const request = opts.nodeAllocation?.(row.ctx, obj(row).metadata.name).cpuRequestMilli ?? 0;
+      return allocatable ? (request / allocatable) * 100 : null;
+    },
+    renderCell: (params) => {
+      const allocatable = nodeAllocatableCpuMilli(obj(params.row));
+      const request = opts.nodeAllocation?.(params.row.ctx, obj(params.row).metadata.name).cpuRequestMilli ?? 0;
+      return <RatioBarCell value={allocatable ? (request / allocatable) * 100 : undefined} label={allocatable ? `${formatCpu(request)} / ${formatCpu(allocatable)}` : undefined} />;
+    },
+  }),
+  nodeMemoryAllocation: (opts) => ({
+    field: 'nodeMemoryAllocation',
+    headerName: 'Memory Allocation',
+    width: 165,
+    type: 'number',
+    valueGetter: (_v, row) => {
+      const allocatable = nodeAllocatableMemoryBytes(obj(row));
+      const request = opts.nodeAllocation?.(row.ctx, obj(row).metadata.name).memoryRequestBytes ?? 0;
+      return allocatable ? (request / allocatable) * 100 : null;
+    },
+    renderCell: (params) => {
+      const allocatable = nodeAllocatableMemoryBytes(obj(params.row));
+      const request = opts.nodeAllocation?.(params.row.ctx, obj(params.row).metadata.name).memoryRequestBytes ?? 0;
+      return <RatioBarCell value={allocatable ? (request / allocatable) * 100 : undefined} label={allocatable ? `${formatBytes(request)} / ${formatBytes(allocatable)}` : undefined} />;
     },
   }),
   workloadReady: () => ({
@@ -278,9 +385,57 @@ const COLUMN_DEFS: Record<string, (opts: { metrics?: MetricsLookup }) => Col> = 
   }),
   nodeVersion: () => ({
     field: 'nodeVersion',
-    headerName: 'Version',
+    headerName: 'kubelet',
     width: 130,
     valueGetter: (_v, row) => ((obj(row).status as { nodeInfo?: { kubeletVersion?: string } })?.nodeInfo?.kubeletVersion ?? ''),
+  }),
+  nodeOperatingSystem: () => ({
+    field: 'nodeOperatingSystem',
+    headerName: 'Operating System',
+    width: 180,
+    valueGetter: (_v, row) => ((obj(row).status as { nodeInfo?: { osImage?: string } })?.nodeInfo?.osImage ?? ''),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  nodeKernelVersion: () => ({
+    field: 'nodeKernelVersion',
+    headerName: 'Kernel Version',
+    width: 150,
+    valueGetter: (_v, row) => ((obj(row).status as { nodeInfo?: { kernelVersion?: string } })?.nodeInfo?.kernelVersion ?? ''),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  nodeContainerRuntime: () => ({
+    field: 'nodeContainerRuntime',
+    headerName: 'Container Runtime',
+    width: 170,
+    valueGetter: (_v, row) => ((obj(row).status as { nodeInfo?: { containerRuntimeVersion?: string } })?.nodeInfo?.containerRuntimeVersion ?? ''),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  nodeInternalIp: () => ({
+    field: 'nodeInternalIp',
+    headerName: 'Internal IP',
+    width: 130,
+    valueGetter: (_v, row) => nodeAddress(obj(row), 'InternalIP'),
+  }),
+  nodeExternalIp: () => ({
+    field: 'nodeExternalIp',
+    headerName: 'External IP',
+    width: 130,
+    valueGetter: (_v, row) => nodeAddress(obj(row), 'ExternalIP'),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  nodeTaints: () => ({
+    field: 'nodeTaints',
+    headerName: 'Taints',
+    width: 180,
+    valueGetter: (_v, row) => nodeTaints(obj(row)),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  nodeConditions: () => ({
+    field: 'nodeConditions',
+    headerName: 'Conditions',
+    width: 180,
+    valueGetter: (_v, row) => nodeConditions(obj(row)),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
   }),
   nsStatus: () => ({
     field: 'nsStatus',
@@ -356,6 +511,125 @@ const COLUMN_DEFS: Record<string, (opts: { metrics?: MetricsLookup }) => Col> = 
   }),
 };
 
+const EMPTY_NODE_ALLOCATION: NodeAllocationSummary = {
+  podCount: 0,
+  daemonSetPodCount: 0,
+  cpuRequestMilli: 0,
+  memoryRequestBytes: 0,
+};
+
+function TextCell({ value }: { value: string }) {
+  const text = value || '-';
+  return (
+    <Tooltip title={text}>
+      <Typography variant="body2" noWrap sx={{ minWidth: 0 }}>
+        {text}
+      </Typography>
+    </Tooltip>
+  );
+}
+
+function RatioBarCell({ value, label }: { value?: number; label?: string }) {
+  if (value === undefined || Number.isNaN(value)) return <TextCell value="" />;
+  const capped = Math.max(0, Math.min(100, value));
+  const color = value >= 90 ? 'error' : value >= 75 ? 'warning' : 'primary';
+  return (
+    <Tooltip title={label ?? `${value.toFixed(0)}%`}>
+      <Box sx={{ width: '100%', minWidth: 0, display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography variant="caption" sx={{ width: 38, flexShrink: 0, fontWeight: 600 }}>
+          {value >= 1000 ? '999+%' : `${value.toFixed(0)}%`}
+        </Typography>
+        <LinearProgress
+          variant="determinate"
+          value={capped}
+          color={color}
+          sx={{ flex: 1, minWidth: 42, height: 5, borderRadius: 999, bgcolor: 'action.hover' }}
+        />
+      </Box>
+    </Tooltip>
+  );
+}
+
+function nodeAllocatable(node: KubeObject, key: string): string | undefined {
+  return (node.status as { allocatable?: Record<string, string> } | undefined)?.allocatable?.[key];
+}
+
+function nodeAllocatableCpuMilli(node: KubeObject): number {
+  return Math.round(parseQuantity(nodeAllocatable(node, 'cpu')) * 1000);
+}
+
+function nodeAllocatableMemoryBytes(node: KubeObject): number {
+  return Math.round(parseQuantity(nodeAllocatable(node, 'memory')));
+}
+
+function nodeAllocatablePods(node: KubeObject): number {
+  return Math.round(parseQuantity(nodeAllocatable(node, 'pods')));
+}
+
+function podNodeName(pod: KubeObject): string | undefined {
+  return (pod.spec as { nodeName?: string } | undefined)?.nodeName;
+}
+
+function isTerminalPod(pod: KubeObject): boolean {
+  const phase = (pod.status as { phase?: string } | undefined)?.phase;
+  return phase === 'Succeeded' || phase === 'Failed';
+}
+
+function isDaemonSetPod(pod: KubeObject): boolean {
+  return (pod.metadata.ownerReferences ?? []).some((owner) => owner.kind === 'DaemonSet');
+}
+
+interface ContainerWithRequests {
+  resources?: { requests?: Record<string, string> };
+}
+
+function podRequestTotals(pod: KubeObject): { cpuMilli: number; memoryBytes: number } {
+  const spec = pod.spec as
+    | {
+        containers?: ContainerWithRequests[];
+        initContainers?: ContainerWithRequests[];
+        overhead?: Record<string, string>;
+      }
+    | undefined;
+  const containers = spec?.containers ?? [];
+  const initContainers = spec?.initContainers ?? [];
+  const appCpu = containers.reduce((sum, c) => sum + parseCpuRequest(c), 0);
+  const appMemory = containers.reduce((sum, c) => sum + parseMemoryRequest(c), 0);
+  const initCpu = initContainers.reduce((max, c) => Math.max(max, parseCpuRequest(c)), 0);
+  const initMemory = initContainers.reduce((max, c) => Math.max(max, parseMemoryRequest(c)), 0);
+  return {
+    cpuMilli: Math.max(appCpu, initCpu) + Math.round(parseQuantity(spec?.overhead?.cpu) * 1000),
+    memoryBytes: Math.max(appMemory, initMemory) + Math.round(parseQuantity(spec?.overhead?.memory)),
+  };
+}
+
+function parseCpuRequest(container: ContainerWithRequests): number {
+  return Math.round(parseQuantity(container.resources?.requests?.cpu) * 1000);
+}
+
+function parseMemoryRequest(container: ContainerWithRequests): number {
+  return Math.round(parseQuantity(container.resources?.requests?.memory));
+}
+
+export function makeNodeAllocationLookup(pods: ClusterRow[]): NodeAllocationLookup {
+  const byNode = new Map<string, NodeAllocationSummary>();
+  for (const row of pods) {
+    if (isTerminalPod(row.obj)) continue;
+    const nodeName = podNodeName(row.obj);
+    if (!nodeName) continue;
+    const key = `${row.ctx}\0${nodeName}`;
+    const prev = byNode.get(key) ?? { ...EMPTY_NODE_ALLOCATION };
+    const requests = podRequestTotals(row.obj);
+    byNode.set(key, {
+      podCount: prev.podCount + 1,
+      daemonSetPodCount: prev.daemonSetPodCount + (isDaemonSetPod(row.obj) ? 1 : 0),
+      cpuRequestMilli: prev.cpuRequestMilli + requests.cpuMilli,
+      memoryRequestBytes: prev.memoryRequestBytes + requests.memoryBytes,
+    });
+  }
+  return (ctx, nodeName) => byNode.get(`${ctx}\0${nodeName}`) ?? EMPTY_NODE_ALLOCATION;
+}
+
 /**
  * Columns from a CRD's additionalPrinterColumns. Values come from evaluating
  * the column's jsonPath against the live object; non-scalar results are
@@ -396,6 +670,13 @@ export function makeMetricsLookup(kind: string, metrics: Map<string, MetricsSnap
     const snap = metrics.get(ctx);
     if (!snap?.available) return undefined;
     const entry = snap.items.find((i) => i.name === name && (kind === 'Node' || i.namespace === namespace));
-    return entry ? { cpuMilli: entry.cpuMilli, memBytes: entry.memBytes } : undefined;
+    return entry
+      ? {
+          cpuMilli: entry.cpuMilli,
+          memBytes: entry.memBytes,
+          cpuCapacityMilli: entry.cpuCapacityMilli,
+          memCapacityBytes: entry.memCapacityBytes,
+        }
+      : undefined;
   };
 }
