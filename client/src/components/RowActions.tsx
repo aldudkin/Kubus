@@ -29,8 +29,8 @@ import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import ReplayIcon from '@mui/icons-material/Replay';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import PauseCircleOutlineIcon from '@mui/icons-material/PauseCircleOutline';
-import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
+import PauseCircleOutlinedIcon from '@mui/icons-material/PauseCircleOutlined';
+import PlayCircleOutlinedIcon from '@mui/icons-material/PlayCircleOutlined';
 import LayersIcon from '@mui/icons-material/Layers';
 import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
@@ -285,7 +285,7 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
               close();
             }}
           >
-            <ListItemIcon>{rolloutPaused ? <PlayCircleOutlineIcon fontSize="small" /> : <PauseCircleOutlineIcon fontSize="small" />}</ListItemIcon>
+            <ListItemIcon>{rolloutPaused ? <PlayCircleOutlinedIcon fontSize="small" /> : <PauseCircleOutlinedIcon fontSize="small" />}</ListItemIcon>
             <ListItemText>{rolloutPaused ? 'Resume rollout' : 'Pause rollout'}</ListItemText>
           </MenuItem>
         )}
@@ -351,7 +351,7 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
               close();
             }}
           >
-            <ListItemIcon>{cjSuspended ? <PlayCircleOutlineIcon fontSize="small" /> : <PauseCircleOutlineIcon fontSize="small" />}</ListItemIcon>
+            <ListItemIcon>{cjSuspended ? <PlayCircleOutlinedIcon fontSize="small" /> : <PauseCircleOutlinedIcon fontSize="small" />}</ListItemIcon>
             <ListItemText>{cjSuspended ? 'Resume' : 'Suspend'}</ListItemText>
           </MenuItem>
         )}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Box, Drawer, FormControlLabel, IconButton, Link, Stack, Switch, Tab, Tabs, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import yaml from 'js-yaml';
+import { dump as dumpYaml } from 'js-yaml';
 import type { KubeObject } from '@kubus/shared';
 import { useApplyResource, useDryRunResource, useResource, useResourceEvents } from '../api/queries.js';
 import { withoutManagedFields } from '../kube-display.js';
@@ -67,7 +67,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   const apply = useApplyResource();
   const dryRun = useDryRunResource();
 
-  const yamlText = useMemo(() => (obj ? yaml.dump(withoutManagedFields(obj), { noRefs: true, lineWidth: 140 }) : ''), [obj]);
+  const yamlText = useMemo(() => (obj ? dumpYaml(withoutManagedFields(obj), { noRefs: true, lineWidth: 140 }) : ''), [obj]);
   const schemaSource = isCrd ? obj : backingCrd;
   const versions = useMemo(() => crdVersions(schemaSource), [schemaSource]);
   const hasMetrics = sel?.kind === 'Pod' || sel?.kind === 'Node';
@@ -94,7 +94,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
     <Drawer anchor="right" open={!!sel} onClose={onClose} slotProps={{ paper: { sx: { width: drawerWidth } } }}>
       {sel && (
         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-          <Stack direction="row" alignItems="center" sx={{ px: 2, py: 1, borderBottom: 1, borderColor: 'divider' }}>
+          <Stack direction="row" sx={{ px: 2, py: 1, borderBottom: 1, borderColor: 'divider', alignItems: 'center' }}>
             {onBack && (
               <IconButton onClick={onBack} sx={{ mr: 1 }}>
                 <ArrowBackIcon />

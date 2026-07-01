@@ -32,7 +32,7 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import AdminPanelSettingsOutlinedIcon from '@mui/icons-material/AdminPanelSettingsOutlined';
 import ExtensionOutlinedIcon from '@mui/icons-material/ExtensionOutlined';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import { NavLink, useLocation } from 'react-router';
 import { BUILTIN_NAV_GROUPS, groupToPath, pluralLabel, type FavoriteItem, type ResourceKindInfo, type SavedView } from '@kubus/shared';
 import { useApiResourcesForContexts } from '../api/queries.js';
@@ -173,7 +173,7 @@ function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: st
             }}
             sx={{ '& svg': { fontSize: 17 } }}
           >
-            <DeleteOutlineIcon fontSize="small" />
+            <DeleteOutlinedIcon fontSize="small" />
           </IconButton>
         </Tooltip>
       }
