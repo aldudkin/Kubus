@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import { Box, Chip, InputAdornment, Stack, TextField, Typography } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams } from '@mui/x-data-grid';
@@ -17,8 +17,9 @@ interface Props {
   onLabelSelectorChange?: (value: string) => void;
   onFieldSelectorChange?: (value: string) => void;
   onRowClick?: (row: ClusterRow) => void;
+  onRowContextMenu?: (row: ClusterRow, event: MouseEvent<HTMLElement>) => void;
   /** Extra toolbar elements (e.g. create button). */
-  toolbar?: React.ReactNode;
+  toolbar?: ReactNode;
   /** Enable checkbox selection; returns selected rows. */
   onSelectionChange?: (rows: ClusterRow[]) => void;
   checkboxSelection?: boolean;
@@ -38,6 +39,7 @@ export function ResourceTable({
   onLabelSelectorChange,
   onFieldSelectorChange,
   onRowClick,
+  onRowContextMenu,
   toolbar,
   checkboxSelection,
   onSelectionChange,
@@ -68,6 +70,8 @@ export function ResourceTable({
         r.ctx.toLowerCase().includes(f),
     );
   }, [rows, activeFilter]);
+
+  const rowsById = useMemo(() => new Map(filtered.map((row) => [row.obj.metadata.uid, row])), [filtered]);
 
   const setTextFilter = (value: string) => {
     if (onFilterChange) onFilterChange(value);
@@ -134,6 +138,21 @@ export function ResourceTable({
         }
         disableRowSelectionOnClick={!!checkboxSelection}
         onRowClick={onRowClick ? (params: GridRowParams<ClusterRow>) => onRowClick(params.row) : undefined}
+        slotProps={
+          onRowContextMenu
+            ? {
+                row: {
+                  onContextMenu: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const id = event.currentTarget.getAttribute('data-id');
+                    const row = id ? rowsById.get(id) : undefined;
+                    if (row) onRowContextMenu(row, event);
+                  },
+                },
+              }
+            : undefined
+        }
         columnVisibilityModel={visibility}
         onColumnVisibilityModelChange={setVisibility}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
