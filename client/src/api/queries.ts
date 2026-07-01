@@ -88,6 +88,21 @@ export function useConnectContext() {
   });
 }
 
+export function useReconnectContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ctx: string) => apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}/reconnect`, { method: 'POST' }),
+    onSuccess: (contexts) => {
+      qc.setQueryData(['contexts'], contexts);
+      void qc.invalidateQueries({ queryKey: ['api-resources'] });
+      void qc.invalidateQueries({ queryKey: ['api-resources-multi'] });
+      void qc.invalidateQueries({ queryKey: ['crd-columns'] });
+      void qc.invalidateQueries({ queryKey: ['namespaces'] });
+      void qc.invalidateQueries({ queryKey: ['overview'] });
+    },
+  });
+}
+
 export function useTestConnection() {
   return useMutation({
     mutationFn: (ctx: string) => apiFetch<TestConnectionResponse>(`/api/contexts/${encodeURIComponent(ctx)}/test`, { method: 'POST' }),

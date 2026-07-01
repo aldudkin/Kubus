@@ -83,6 +83,16 @@ export function registerContextRoutes(app: FastifyInstance, ctx: AppContext): vo
     return ctx.clusters.listContexts();
   });
 
+  app.post<{ Params: { ctx: string } }>('/api/contexts/:ctx/reconnect', async (req, reply) => {
+    try {
+      await ctx.clusters.reconnect(req.params.ctx);
+      return ctx.clusters.listContexts();
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+
   app.get<{ Params: { ctx: string } }>('/api/contexts/:ctx/api-resources', async (req, reply) => {
     try {
       return await ctx.clusters.get(req.params.ctx).discovery.getResources();

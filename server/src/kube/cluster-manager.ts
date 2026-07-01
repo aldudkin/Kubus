@@ -154,9 +154,17 @@ export class ClusterManager extends EventEmitter {
   private kc = new KubeConfig();
   private handles = new Map<string, ClusterHandle>();
   private fsWatchers: fs.FSWatcher[] = [];
+  private watchRetryTimers: NodeJS.Timeout[] = [];
+  private reloadDebounce?: NodeJS.Timeout;
   private healthCache = new Map<string, CachedContextHealth>();
   private healthTimer?: NodeJS.Timeout;
   private healthRun?: Promise<void>;
+  /**
+   * Long-lived per-context clients for health probes. Reusing them keeps the
+   * exec-plugin token cache and TLS connection pool warm instead of spawning
+   * cloud CLIs and re-handshaking on every probe cycle.
+   */
+  private probeClients = new Map<string, RawClient>();
   /** Cluster names whose proxy-url was injected from env vars (not the kubeconfig). */
   private envProxyClusters = new Set<string>();
 
@@ -210,41 +218,92 @@ export class ClusterManager extends EventEmitter {
   /** Re-point the kubeconfig at runtime: reload contexts and re-watch files. */
   setKubeconfigOverride(p: string | undefined): void {
     this.kubeconfigOverride = p;
-    for (const w of this.fsWatchers) w.close();
-    this.fsWatchers = [];
+    this.closeFileWatchers();
     this.reload();
     this.watchKubeconfigFiles();
   }
 
+  private closeFileWatchers(): void {
+    for (const w of this.fsWatchers) w.close();
+    this.fsWatchers = [];
+    for (const t of this.watchRetryTimers) clearTimeout(t);
+    this.watchRetryTimers = [];
+  }
+
+  /**
+   * Watch the parent directories of the kubeconfig paths rather than the files
+   * themselves: fs.watch on a file goes stale once the file is replaced via
+   * tmp+rename (which is how kubectl — and our own writeKubeconfig — save it),
+   * and a directory watch also picks up kubeconfigs created after startup.
+   */
   private watchKubeconfigFiles(): void {
+    const byDir = new Map<string, Set<string>>();
     for (const p of this.kubeconfigPaths()) {
-      try {
-        let debounce: NodeJS.Timeout | undefined;
-        const w = fs.watch(p, () => {
-          if (debounce) clearTimeout(debounce);
-          debounce = setTimeout(() => this.reload(), 500);
-        });
-        w.unref();
-        this.fsWatchers.push(w);
-      } catch {
-        // file may not exist yet
-      }
+      const abs = path.resolve(p);
+      const dir = path.dirname(abs);
+      let names = byDir.get(dir);
+      if (!names) byDir.set(dir, (names = new Set()));
+      names.add(path.basename(abs));
     }
+    for (const [dir, names] of byDir) this.watchKubeconfigDir(dir, names);
+  }
+
+  private watchKubeconfigDir(dir: string, names: Set<string>): void {
+    try {
+      const w = fs.watch(dir, (_event, filename) => {
+        // A null filename (possible on some platforms) may still concern us.
+        if (filename && !names.has(filename.toString())) return;
+        this.scheduleReload();
+      });
+      w.unref();
+      this.fsWatchers.push(w);
+    } catch {
+      // Directory missing (e.g. ~/.kube on a fresh machine) — retry until it appears.
+      const timer = setTimeout(() => {
+        this.watchRetryTimers = this.watchRetryTimers.filter((t) => t !== timer);
+        this.watchKubeconfigDir(dir, names);
+      }, 10_000);
+      timer.unref();
+      this.watchRetryTimers.push(timer);
+    }
+  }
+
+  private scheduleReload(): void {
+    if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
+    this.reloadDebounce = setTimeout(() => {
+      this.reloadDebounce = undefined;
+      this.reload();
+    }, 300);
+    this.reloadDebounce.unref();
+  }
+
+  /** Serialized (context, cluster, user) per context — for change detection across reloads. */
+  private contextFingerprints(): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const c of this.kc.getContexts()) {
+      map.set(c.name, JSON.stringify([c, this.kc.getCluster(c.cluster) ?? null, this.kc.getUser(c.user) ?? null]));
+    }
+    return map;
   }
 
   reload(): void {
     this.log.info('kubeconfig changed, reloading');
+    const before = this.contextFingerprints();
     this.kc = new KubeConfig();
     this.loadKubeconfig();
-    const valid = new Set(this.kc.getContexts().map((c) => c.name));
+    this.probeClients.clear();
+    const after = this.contextFingerprints();
     for (const [name, handle] of this.handles) {
-      if (!valid.has(name)) {
-        handle.dispose();
-        this.handles.delete(name);
-      }
+      // Drop sessions whose backing entries were removed or edited so clients
+      // reconnect against the new definition instead of a stale clone.
+      if (after.get(name) === before.get(name)) continue;
+      handle.dispose();
+      this.handles.delete(name);
+      this.healthCache.delete(name);
+      this.emit('context-reset', name);
     }
     for (const name of this.healthCache.keys()) {
-      if (!valid.has(name)) this.healthCache.delete(name);
+      if (!after.has(name)) this.healthCache.delete(name);
     }
     this.refreshCachedHealth();
     this.emit('contexts-changed');
@@ -305,12 +364,21 @@ export class ClusterManager extends EventEmitter {
     return result;
   }
 
+  private probeClient(contextName: string): RawClient {
+    let raw = this.probeClients.get(contextName);
+    if (!raw) {
+      const kc = new KubeConfig();
+      kc.loadFromString(this.kc.exportConfig());
+      applyProxyRuntimeCompatibility(kc);
+      kc.setCurrentContext(contextName);
+      raw = new RawClient(kc);
+      this.probeClients.set(contextName, raw);
+    }
+    return raw;
+  }
+
   private async probeContext(contextName: string, timeoutMs: number): Promise<TestConnectionResponse> {
-    const kc = new KubeConfig();
-    kc.loadFromString(this.kc.exportConfig());
-    applyProxyRuntimeCompatibility(kc);
-    kc.setCurrentContext(contextName);
-    const raw = new RawClient(kc);
+    const raw = this.probeClient(contextName);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     timeout.unref();
@@ -461,6 +529,9 @@ export class ClusterManager extends EventEmitter {
     if (handle.health === 'connected') {
       handle.activate();
     }
+    // A fresh session exists: watch subscriptions must (re)attach to it.
+    this.emit('context-reset', contextName);
+    this.emit('contexts-changed');
     return handle;
   }
 
@@ -469,12 +540,26 @@ export class ClusterManager extends EventEmitter {
     if (handle) {
       handle.dispose();
       this.handles.delete(contextName);
+      this.emit('context-reset', contextName);
+      this.emit('contexts-changed');
     }
+  }
+
+  /**
+   * Tear down a context's session and build a fresh one: new KubeConfig clone,
+   * new auth state, discovery, watchers, and metrics. The user-facing "my
+   * session is stuck / my credentials rotated" escape hatch.
+   */
+  async reconnect(contextName: string): Promise<ClusterHandle> {
+    this.disconnect(contextName);
+    this.probeClients.delete(contextName);
+    return this.connect(contextName);
   }
 
   dispose(): void {
     if (this.healthTimer) clearInterval(this.healthTimer);
-    for (const w of this.fsWatchers) w.close();
+    if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
+    this.closeFileWatchers();
     for (const handle of this.handles.values()) handle.dispose();
     this.handles.clear();
   }
