@@ -158,6 +158,7 @@ export class ClusterHandle {
 export class ClusterManager extends EventEmitter {
   private kc = new KubeConfig();
   private handles = new Map<string, ClusterHandle>();
+  private connecting = new Map<string, Promise<ClusterHandle>>();
   private fsWatchers: fs.FSWatcher[] = [];
   private watchRetryTimers: NodeJS.Timeout[] = [];
   private reloadDebounce?: NodeJS.Timeout;
@@ -322,6 +323,7 @@ export class ClusterManager extends EventEmitter {
       const cachedHealth = this.healthCache.get(c.name);
       const cluster = this.kc.getCluster(c.cluster);
       const user = this.kc.getUser(c.user);
+      const sshTunnelKey = this.sshTunnelKeyForContext(c.name);
       return {
         name: c.name,
         cluster: c.cluster,
@@ -335,7 +337,7 @@ export class ClusterManager extends EventEmitter {
         kubernetesVersion: handle?.kubernetesVersion ?? cachedHealth?.kubernetesVersion,
         proxyUrl: cluster?.proxyUrl,
         proxyFromEnv: this.envProxyClusters.has(c.cluster) || undefined,
-        sshHost: this.sshTunnels?.hostForCluster(c.cluster),
+        sshHost: sshTunnelKey ? this.sshTunnels?.hostForContextKey(sshTunnelKey) : undefined,
         tlsServerName: cluster?.tlsServerName,
         skipTlsVerify: cluster?.skipTLSVerify || undefined,
         caPresent: !!(cluster?.caData || cluster?.caFile) || undefined,
@@ -371,10 +373,12 @@ export class ClusterManager extends EventEmitter {
     return result;
   }
 
-  /** SOCKS URL of the managed SSH tunnel for a cluster, spawning the tunnel if needed. */
-  private async sshProxyFor(clusterName: string | undefined): Promise<string | undefined> {
-    if (!clusterName || !this.sshTunnels) return undefined;
-    const host = this.sshTunnels.hostForCluster(clusterName);
+  /** SOCKS URL of the managed SSH tunnel for a context, spawning the tunnel if needed. */
+  private async sshProxyFor(contextName: string): Promise<string | undefined> {
+    if (!this.sshTunnels) return undefined;
+    const sshTunnelKey = this.sshTunnelKeyForContext(contextName);
+    if (!sshTunnelKey) return undefined;
+    const host = this.sshTunnels.hostForContextKey(sshTunnelKey);
     if (!host) return undefined;
     return this.sshTunnels.ensure(host);
   }
@@ -382,14 +386,14 @@ export class ClusterManager extends EventEmitter {
   private async probeClient(contextName: string): Promise<RawClient> {
     // For SSH-tunneled clusters the proxy URL can move (tunnel respawned on a
     // new port), so the cached client is only valid while the URL matches.
-    const clusterName = this.kc.getContexts().find((c) => c.name === contextName)?.cluster;
-    const sshProxyUrl = await this.sshProxyFor(clusterName);
+    const sshProxyUrl = await this.sshProxyFor(contextName);
     const cached = this.probeClients.get(contextName);
     if (cached && cached.proxyUrl === sshProxyUrl) return cached.raw;
     const kc = new KubeConfig();
     kc.loadFromString(this.kc.exportConfig());
     applyProxyRuntimeCompatibility(kc);
     kc.setCurrentContext(contextName);
+    const clusterName = kc.getContexts().find((c) => c.name === contextName)?.cluster;
     if (sshProxyUrl && clusterName) overrideClusterProxyUrl(kc, clusterName, sshProxyUrl);
     const raw = new RawClient(kc);
     this.probeClients.set(contextName, { raw, proxyUrl: sshProxyUrl });
@@ -518,14 +522,20 @@ export class ClusterManager extends EventEmitter {
     if (host && !isValidSshDestination(host)) {
       throw new HttpProblem(400, 'SSH jump host must be an ssh config alias or user@host (no spaces or leading "-")', 'BadRequest');
     }
-    if ((this.sshTunnels.hostForCluster(ctxObj.cluster) ?? null) === host) return;
-    this.sshTunnels.setHostForCluster(ctxObj.cluster, host);
-    this.disconnectHandlesForEntries(ctxObj.cluster, undefined);
-    for (const c of this.kc.getContexts()) {
-      if (c.cluster === ctxObj.cluster) this.probeClients.delete(c.name);
-    }
+    const sshTunnelKey = this.sshTunnelKeyForContext(contextName);
+    if (!sshTunnelKey) throw new HttpProblem(400, `could not find a kubeconfig file defining context "${contextName}"`, 'BadRequest');
+    if ((this.sshTunnels.hostForContextKey(sshTunnelKey) ?? null) === host) return;
+    this.sshTunnels.setHostForContextKey(sshTunnelKey, host);
+    this.disconnect(contextName);
+    this.probeClients.delete(contextName);
     this.refreshCachedHealth();
     this.emit('contexts-changed');
+  }
+
+  private sshTunnelKeyForContext(contextName: string): string | null {
+    const contextFile = this.findEntryFile('context', contextName);
+    if (!contextFile) return null;
+    return `context:${JSON.stringify([path.resolve(contextFile), contextName])}`;
   }
 
   /** Locate the kubeconfig file (among the watched paths) that defines an entry. */
@@ -567,13 +577,23 @@ export class ClusterManager extends EventEmitter {
   async connect(contextName: string): Promise<ClusterHandle> {
     const existing = this.handles.get(contextName);
     if (existing) return existing;
+    const inFlight = this.connecting.get(contextName);
+    if (inFlight) return inFlight;
+    const connecting = this.connectFresh(contextName).finally(() => {
+      if (this.connecting.get(contextName) === connecting) this.connecting.delete(contextName);
+    });
+    this.connecting.set(contextName, connecting);
+    return connecting;
+  }
+
+  private async connectFresh(contextName: string): Promise<ClusterHandle> {
     const ctxEntry = this.kc.getContexts().find((c) => c.name === contextName);
     if (!ctxEntry) {
       throw new HttpProblem(404, `context "${contextName}" not found in kubeconfig`, 'NotFound');
     }
     let sshProxyUrl: string | undefined;
     try {
-      sshProxyUrl = await this.sshProxyFor(ctxEntry.cluster);
+      sshProxyUrl = await this.sshProxyFor(contextName);
     } catch (err) {
       throw new HttpProblem(502, err instanceof Error ? err.message : String(err), 'SshTunnelFailed');
     }

@@ -5,13 +5,13 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { SettingsStore } from '../settings-store.js';
 
 /**
- * Kubus-managed SSH tunnels: for clusters mapped to a jump host we spawn the
+ * Kubus-managed SSH tunnels: for contexts mapped to a jump host we spawn the
  * user's own OpenSSH client (`ssh -N -D 127.0.0.1:<port> <host>`) and route the
  * cluster's traffic through the resulting SOCKS listener. Using the system ssh
  * — not an SSH library — means the user's ~/.ssh/config (ProxyJump chains,
  * identities, agent, per-host options) applies exactly as it does in a terminal.
  *
- * The cluster→host mapping lives in Kubus settings, never in the kubeconfig,
+ * The context→host mapping lives in Kubus settings, never in the kubeconfig,
  * so the kubeconfig stays kubectl-compatible.
  */
 
@@ -41,7 +41,7 @@ interface Tunnel {
 }
 
 export class SshTunnelManager {
-  /** cluster name → ssh destination. */
+  /** Scoped kubeconfig context key -> ssh destination. */
   private mapping: Record<string, string>;
   private tunnels = new Map<string, Tunnel>();
   private sshBinaryInfo?: { path: string | null; version?: string };
@@ -51,7 +51,8 @@ export class SshTunnelManager {
     private log: FastifyBaseLogger,
     private settings: SettingsStore,
   ) {
-    this.mapping = { ...(settings.load().sshTunnels ?? {}) };
+    const loaded = settings.load().sshTunnels ?? {};
+    this.mapping = Object.fromEntries(Object.entries(loaded).filter(([key]) => key.startsWith('context:')));
     // ssh children have their own keepalive and outlive us unless killed. The
     // fastify onClose hook covers graceful shutdown; these cover everything
     // else (Ctrl-C, SIGTERM from a dev watcher or service manager).
@@ -66,14 +67,14 @@ export class SshTunnelManager {
     }
   }
 
-  hostForCluster(clusterName: string): string | undefined {
-    return this.mapping[clusterName];
+  hostForContextKey(contextKey: string): string | undefined {
+    return this.mapping[contextKey];
   }
 
-  /** Update the cluster→host mapping, persist it, and stop tunnels nothing references anymore. */
-  setHostForCluster(clusterName: string, host: string | null): void {
-    if (host) this.mapping[clusterName] = host;
-    else delete this.mapping[clusterName];
+  /** Update the context→host mapping, persist it, and stop tunnels nothing references anymore. */
+  setHostForContextKey(contextKey: string, host: string | null): void {
+    if (host) this.mapping[contextKey] = host;
+    else delete this.mapping[contextKey];
     this.settings.save({ sshTunnels: { ...this.mapping } });
     const referenced = new Set(Object.values(this.mapping));
     for (const [tunnelHost, tunnel] of this.tunnels) {
@@ -115,9 +116,9 @@ export class SshTunnelManager {
     return { available: info.path !== null, version: info.version };
   }
 
-  /** Tunnel state for a mapped cluster, for surfacing in the context list. */
-  tunnelStateForCluster(clusterName: string): 'up' | 'starting' | 'down' | 'error' | undefined {
-    const host = this.mapping[clusterName];
+  /** Tunnel state for a mapped context, for surfacing in the context list. */
+  tunnelStateForContextKey(contextKey: string): 'up' | 'starting' | 'down' | 'error' | undefined {
+    const host = this.mapping[contextKey];
     if (!host) return undefined;
     const tunnel = this.tunnels.get(host);
     if (!tunnel) return 'down';
