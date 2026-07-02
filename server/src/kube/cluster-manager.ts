@@ -23,9 +23,11 @@ import { DiscoveryCache } from './discovery.js';
 import { WatcherRegistry } from './watcher.js';
 import { MetricsPoller } from './metrics-poller.js';
 import { ResourceSearchIndex } from './search-index.js';
-import { applyEnvProxy, applyProxyRuntimeCompatibility } from './connection.js';
+import { applyEnvProxy, applyProxyRuntimeCompatibility, overrideClusterProxyUrl } from './connection.js';
 import { patchClusterEntry, patchUserEntry, writeKubeconfig, type ClusterEditPatch } from './kubeconfig-file.js';
 import { HttpProblem } from '../util/errors.js';
+import type { SshTunnelManager } from '../ssh/tunnel-manager.js';
+import { isValidSshDestination } from '../ssh/tunnel-manager.js';
 import type { ClusterAuthType } from '@kubus/shared';
 
 const BACKGROUND_HEALTH_INTERVAL_MS = 60_000;
@@ -64,6 +66,7 @@ export class ClusterHandle {
     baseConfig: KubeConfig,
     public readonly contextName: string,
     log: FastifyBaseLogger,
+    sshProxyUrl?: string,
   ) {
     // Each handle owns its own KubeConfig: setCurrentContext mutates state
     // and exec-auth caches per-instance — never share across contexts.
@@ -71,6 +74,8 @@ export class ClusterHandle {
     this.kc.loadFromString(baseConfig.exportConfig());
     applyProxyRuntimeCompatibility(this.kc);
     this.kc.setCurrentContext(contextName);
+    const clusterName = this.kc.getContexts().find((c) => c.name === contextName)?.cluster;
+    if (sshProxyUrl && clusterName) overrideClusterProxyUrl(this.kc, clusterName, sshProxyUrl);
     this.raw = new RawClient(this.kc);
     this.discovery = new DiscoveryCache(this.raw);
     this.watchers = new WatcherRegistry(this.raw, log);
@@ -164,13 +169,14 @@ export class ClusterManager extends EventEmitter {
    * exec-plugin token cache and TLS connection pool warm instead of spawning
    * cloud CLIs and re-handshaking on every probe cycle.
    */
-  private probeClients = new Map<string, RawClient>();
+  private probeClients = new Map<string, { raw: RawClient; proxyUrl?: string }>();
   /** Cluster names whose proxy-url was injected from env vars (not the kubeconfig). */
   private envProxyClusters = new Set<string>();
 
   constructor(
     private log: FastifyBaseLogger,
     private kubeconfigOverride?: string,
+    private sshTunnels?: SshTunnelManager,
   ) {
     super();
     this.loadKubeconfig();
@@ -329,6 +335,7 @@ export class ClusterManager extends EventEmitter {
         kubernetesVersion: handle?.kubernetesVersion ?? cachedHealth?.kubernetesVersion,
         proxyUrl: cluster?.proxyUrl,
         proxyFromEnv: this.envProxyClusters.has(c.cluster) || undefined,
+        sshHost: this.sshTunnels?.hostForCluster(c.cluster),
         tlsServerName: cluster?.tlsServerName,
         skipTlsVerify: cluster?.skipTLSVerify || undefined,
         caPresent: !!(cluster?.caData || cluster?.caFile) || undefined,
@@ -364,21 +371,38 @@ export class ClusterManager extends EventEmitter {
     return result;
   }
 
-  private probeClient(contextName: string): RawClient {
-    let raw = this.probeClients.get(contextName);
-    if (!raw) {
-      const kc = new KubeConfig();
-      kc.loadFromString(this.kc.exportConfig());
-      applyProxyRuntimeCompatibility(kc);
-      kc.setCurrentContext(contextName);
-      raw = new RawClient(kc);
-      this.probeClients.set(contextName, raw);
-    }
+  /** SOCKS URL of the managed SSH tunnel for a cluster, spawning the tunnel if needed. */
+  private async sshProxyFor(clusterName: string | undefined): Promise<string | undefined> {
+    if (!clusterName || !this.sshTunnels) return undefined;
+    const host = this.sshTunnels.hostForCluster(clusterName);
+    if (!host) return undefined;
+    return this.sshTunnels.ensure(host);
+  }
+
+  private async probeClient(contextName: string): Promise<RawClient> {
+    // For SSH-tunneled clusters the proxy URL can move (tunnel respawned on a
+    // new port), so the cached client is only valid while the URL matches.
+    const clusterName = this.kc.getContexts().find((c) => c.name === contextName)?.cluster;
+    const sshProxyUrl = await this.sshProxyFor(clusterName);
+    const cached = this.probeClients.get(contextName);
+    if (cached && cached.proxyUrl === sshProxyUrl) return cached.raw;
+    const kc = new KubeConfig();
+    kc.loadFromString(this.kc.exportConfig());
+    applyProxyRuntimeCompatibility(kc);
+    kc.setCurrentContext(contextName);
+    if (sshProxyUrl && clusterName) overrideClusterProxyUrl(kc, clusterName, sshProxyUrl);
+    const raw = new RawClient(kc);
+    this.probeClients.set(contextName, { raw, proxyUrl: sshProxyUrl });
     return raw;
   }
 
   private async probeContext(contextName: string, timeoutMs: number): Promise<TestConnectionResponse> {
-    const raw = this.probeClient(contextName);
+    let raw: RawClient;
+    try {
+      raw = await this.probeClient(contextName);
+    } catch (err) {
+      return { health: 'error', healthMessage: err instanceof Error ? err.message : String(err) };
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     timeout.unref();
@@ -481,6 +505,29 @@ export class ClusterManager extends EventEmitter {
     this.reload();
   }
 
+  /**
+   * Set or clear the Kubus-managed SSH jump host for a context's cluster.
+   * Persisted in Kubus settings (not the kubeconfig); affected sessions are
+   * dropped so the next connect goes through (or stops using) the tunnel.
+   */
+  setSshHost(contextName: string, host: string | null): void {
+    const ctxObj = this.kc.getContexts().find((c) => c.name === contextName);
+    if (!ctxObj) throw new HttpProblem(404, `context "${contextName}" not found in kubeconfig`, 'NotFound');
+    if (!ctxObj.cluster) throw new HttpProblem(400, `context "${contextName}" has no cluster reference`, 'BadRequest');
+    if (!this.sshTunnels) throw new HttpProblem(500, 'SSH tunnel support is not available in this server', 'SshUnavailable');
+    if (host && !isValidSshDestination(host)) {
+      throw new HttpProblem(400, 'SSH jump host must be an ssh config alias or user@host (no spaces or leading "-")', 'BadRequest');
+    }
+    if ((this.sshTunnels.hostForCluster(ctxObj.cluster) ?? null) === host) return;
+    this.sshTunnels.setHostForCluster(ctxObj.cluster, host);
+    this.disconnectHandlesForEntries(ctxObj.cluster, undefined);
+    for (const c of this.kc.getContexts()) {
+      if (c.cluster === ctxObj.cluster) this.probeClients.delete(c.name);
+    }
+    this.refreshCachedHealth();
+    this.emit('contexts-changed');
+  }
+
   /** Locate the kubeconfig file (among the watched paths) that defines an entry. */
   private findEntryFile(kind: 'context' | 'cluster' | 'user', name: string | undefined): string | null {
     if (!name) return null;
@@ -520,10 +567,17 @@ export class ClusterManager extends EventEmitter {
   async connect(contextName: string): Promise<ClusterHandle> {
     const existing = this.handles.get(contextName);
     if (existing) return existing;
-    if (!this.kc.getContexts().some((c) => c.name === contextName)) {
+    const ctxEntry = this.kc.getContexts().find((c) => c.name === contextName);
+    if (!ctxEntry) {
       throw new HttpProblem(404, `context "${contextName}" not found in kubeconfig`, 'NotFound');
     }
-    const handle = new ClusterHandle(this.kc, contextName, this.log);
+    let sshProxyUrl: string | undefined;
+    try {
+      sshProxyUrl = await this.sshProxyFor(ctxEntry.cluster);
+    } catch (err) {
+      throw new HttpProblem(502, err instanceof Error ? err.message : String(err), 'SshTunnelFailed');
+    }
+    const handle = new ClusterHandle(this.kc, contextName, this.log, sshProxyUrl);
     this.handles.set(contextName, handle);
     await handle.probe();
     if (handle.health === 'connected') {

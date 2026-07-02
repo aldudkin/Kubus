@@ -43,6 +43,8 @@ import type {
   KubeconfigImportRequest,
   KubeconfigImportResponse,
   EditClusterRequest,
+  SetSshHostRequest,
+  SshInfoResponse,
   TestConnectionResponse,
 } from '@kubus/shared';
 import { groupToPath } from '@kubus/shared';
@@ -131,6 +133,30 @@ export function useEditCluster() {
       qc.setQueryData(['contexts'], contexts);
       void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
     },
+  });
+}
+
+/** Set/clear the Kubus-managed SSH jump host for a context (used by the Add-cluster flow). */
+export function useSetSshHost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ctx, body }: { ctx: string; body: SetSshHostRequest }) =>
+      apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}/ssh-host`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (contexts) => qc.setQueryData(['contexts'], contexts),
+  });
+}
+
+/** SSH client availability + jump hosts parsed from ~/.ssh/config (for the cluster editor). */
+export function useSshInfo(enabled = true) {
+  return useQuery({
+    queryKey: ['ssh-info'],
+    queryFn: () => apiFetch<SshInfoResponse>('/api/ssh/info'),
+    enabled,
+    staleTime: 30_000,
   });
 }
 
