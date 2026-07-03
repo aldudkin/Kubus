@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Typography } from '@mui/material';
+import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Link, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SubjectIcon from '@mui/icons-material/Subject';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
@@ -104,6 +104,20 @@ export function ResourceListPage() {
   );
   const { data: printerCols } = useCrdColumns(crdCtx, group, version, plural, isCustomKind);
 
+  // For CRD-backed kinds the page title links to the defining CRD.
+  const pushDetail = useDetailStore((s) => s.push);
+  const crdSelection: ResourceSelection | undefined =
+    isCustomKind && crdCtx && group
+      ? {
+          ctx: crdCtx,
+          group: 'apiextensions.k8s.io',
+          version: 'v1',
+          plural: 'customresourcedefinitions',
+          kind: 'CustomResourceDefinition',
+          name: `${plural}.${group}`,
+        }
+      : undefined;
+
   const rowActionTarget = useCallback(
     (row: ClusterRow): RowActionTarget => ({ ctx: row.ctx, group, version, plural, kind, obj: row.obj }),
     [group, version, plural, kind],
@@ -174,7 +188,20 @@ export function ResourceListPage() {
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="h6">{resourceTitle}</Typography>
+          {crdSelection ? (
+            <Link
+              component="button"
+              variant="h6"
+              underline="hover"
+              color="inherit"
+              title={`Open CRD ${crdSelection.name}`}
+              onClick={() => pushDetail(crdSelection)}
+            >
+              {resourceTitle}
+            </Link>
+          ) : (
+            <Typography variant="h6">{resourceTitle}</Typography>
+          )}
         </Box>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>

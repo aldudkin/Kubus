@@ -20,7 +20,7 @@ import StarIcon from '@mui/icons-material/Star';
 import StarBorderIcon from '@mui/icons-material/StarBorder';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import KeyboardCommandKeyIcon from '@mui/icons-material/KeyboardCommandKey';
-import type { FavoriteItem, ResourceRef, SearchResult } from '@kubus/shared';
+import type { FavoriteItem, ResourceRef, SearchResult, SearchResultKind } from '@kubus/shared';
 import { groupToPath } from '@kubus/shared';
 import { useNavigate } from 'react-router';
 import { useGlobalSearch } from '../api/queries.js';
@@ -70,6 +70,12 @@ type Row =
   | { type: 'result'; result: SearchResult }
   | { type: 'command'; command: StaticCommand }
   | { type: 'action'; action: PaletteAction };
+
+const RESULT_CHIP_COLOR: Record<SearchResultKind, 'info' | 'secondary' | 'success'> = {
+  resource: 'info',
+  kind: 'secondary',
+  page: 'success',
+};
 
 export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const selected = useClustersStore((s) => s.selected);
@@ -271,7 +277,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
                         secondary={row.result.subtitle}
                         slotProps={{ primary: { noWrap: true }, secondary: { noWrap: true } }}
                       />
-                      <Chip size="small" label={row.result.kind} variant="outlined" sx={{ mr: 0.5 }} />
+                      <Chip size="small" label={row.result.kind} color={RESULT_CHIP_COLOR[row.result.kind]} variant="outlined" sx={{ mr: 0.5 }} />
                       {row.result.ref && (
                         <Tooltip title="Actions (Tab)">
                           <IconButton

@@ -105,7 +105,9 @@ async function searchContext(handle: ClusterHandle, query: string, limit: number
       kind: 'kind',
       title: kind.kind,
       subtitle: kind.group ? `${kind.group}/${kind.version}` : kind.version,
-      score,
+      // Kinds outrank resource hits of equal match quality: there are few of
+      // them and they are usually what a short query like "art" is after.
+      score: score + 20,
       path: `/r/${groupToPath(kind.group)}/${kind.version}/${kind.plural}`,
     });
   }
