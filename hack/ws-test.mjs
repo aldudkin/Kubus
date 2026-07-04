@@ -106,6 +106,7 @@ const coredns = pods.items.find((p) => p.metadata.name.startsWith('coredns'));
 const etcd = pods.items.find((p) => p.metadata.name.startsWith('etcd'));
 console.log(`targets: logs=${coredns?.metadata.name} exec=${etcd?.metadata.name}`);
 
+
 await testWatch();
 await testLogs(coredns.metadata.name, 'kube-system', 'coredns');
 await testExec(etcd.metadata.name, 'kube-system', 'etcd');
