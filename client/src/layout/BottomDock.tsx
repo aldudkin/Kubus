@@ -10,11 +10,11 @@ import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SubjectIcon from '@mui/icons-material/Subject';
-import { useDockStore } from '../state/dock.js';
+import { clampDockHeight, useDockStore } from '../state/dock.js';
 import { TerminalPane } from '../components/TerminalPane.js';
 import { LogViewer } from '../components/LogViewer.js';
 
-export function BottomDock() {
+export function BottomDock({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
   const tabs = useDockStore((s) => s.tabs);
   const activeId = useDockStore((s) => s.activeId);
   const open = useDockStore((s) => s.open);
@@ -36,12 +36,32 @@ export function BottomDock() {
 
   if (!open || tabs.length === 0) return null;
 
+  // Resize by writing the container height directly to the DOM (one write per
+  // frame), keeping React out of the drag loop; the store is committed once on
+  // mouseup so the rest of the app re-renders a single time.
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
+    const el = containerRef.current;
+    if (!el) return;
     const startY = e.clientY;
     const startHeight = useDockStore.getState().height;
-    const onMove = (ev: MouseEvent) => setHeight(startHeight + (startY - ev.clientY));
+    let pending = startHeight;
+    let frame = 0;
+    el.style.transition = 'none';
+    const onMove = (ev: MouseEvent) => {
+      pending = clampDockHeight(startHeight + (startY - ev.clientY));
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          el.style.height = `${pending}px`;
+        });
+      }
+    };
     const onUp = () => {
+      if (frame) cancelAnimationFrame(frame);
+      el.style.height = `${pending}px`;
+      el.style.transition = '';
+      setHeight(pending);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
