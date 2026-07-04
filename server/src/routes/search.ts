@@ -8,6 +8,7 @@ import { sendError } from '../util/errors.js';
 const PAGES: Array<{ title: string; path: string; subtitle: string }> = [
   { title: 'Overview', path: '/', subtitle: 'Cluster health dashboard' },
   { title: 'Topology', path: '/topology', subtitle: 'Resource relationship graph' },
+  { title: 'Security Audit', path: '/audit', subtitle: 'Built-in security checks' },
   { title: 'Helm Releases', path: '/helm', subtitle: 'Installed Helm releases' },
   { title: 'Port Forwards', path: '/forwards', subtitle: 'Active local forwards' },
   { title: 'Diff', path: '/diff', subtitle: 'Compare resources' },
@@ -105,7 +106,9 @@ async function searchContext(handle: ClusterHandle, query: string, limit: number
       kind: 'kind',
       title: kind.kind,
       subtitle: kind.group ? `${kind.group}/${kind.version}` : kind.version,
-      score,
+      // Kinds outrank resource hits of equal match quality: there are few of
+      // them and they are usually what a short query like "art" is after.
+      score: score + 20,
       path: `/r/${groupToPath(kind.group)}/${kind.version}/${kind.plural}`,
     });
   }

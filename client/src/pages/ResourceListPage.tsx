@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Typography } from '@mui/material';
+import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Link, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SubjectIcon from '@mui/icons-material/Subject';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
@@ -17,6 +17,7 @@ import { RowActionMenu, RowActions, type RowActionTarget } from '../components/R
 import { YamlEditor } from '../components/YamlEditor.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { useNavigationStore } from '../state/navigation.js';
+import { addLabelTerm } from '../label-selector.js';
 
 export function ResourceListPage() {
   const params = useParams<{ group: string; version: string; plural: string }>();
@@ -39,9 +40,15 @@ export function ResourceListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const textFilter = searchParams.get('q') ?? '';
   const labelSelector = searchParams.get('label') ?? '';
-  const fieldSelector = searchParams.get('field') ?? '';
 
-  const list = useFilteredList(group, version, plural, namespaced, { labelSelector, fieldSelector });
+  useEffect(() => {
+    if (!searchParams.has('field')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('field');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const list = useFilteredList(group, version, plural, namespaced, { labelSelector });
   const isPodOrNode = kind === 'Pod' || kind === 'Node';
   const { data: podMetrics } = useResourceMetrics(isPodOrNode ? selected : [], kind === 'Node' ? 'nodes' : 'pods');
   const metricsUnavailable = isPodOrNode ? selected.filter((ctx) => podMetrics?.get(ctx)?.available === false) : [];
@@ -88,13 +95,33 @@ export function ResourceListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailOpen]);
 
+  // `replace` keeps filter typing from flooding the history stack.
   const setQueryParam = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
     if (value.trim()) next.set(key, value);
     else next.delete(key);
+    next.delete('field');
     next.delete('sel');
-    setSearchParams(next);
+    setSearchParams(next, { replace: true });
   };
+
+  const addLabelFilter = useCallback(
+    (term: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          const updated = addLabelTerm(next.get('label') ?? '', term);
+          if (updated) next.set('label', updated);
+          else next.delete('label');
+          next.delete('field');
+          next.delete('sel');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   // CRD printer columns: taken from the first selected cluster that serves
   // this GVR — multi-cluster CRD definition drift is not reconciled.
@@ -104,18 +131,38 @@ export function ResourceListPage() {
   );
   const { data: printerCols } = useCrdColumns(crdCtx, group, version, plural, isCustomKind);
 
+  // For CRD-backed kinds the page title links to the defining CRD.
+  const pushDetail = useDetailStore((s) => s.push);
+  const crdSelection: ResourceSelection | undefined =
+    isCustomKind && crdCtx && group
+      ? {
+          ctx: crdCtx,
+          group: 'apiextensions.k8s.io',
+          version: 'v1',
+          plural: 'customresourcedefinitions',
+          kind: 'CustomResourceDefinition',
+          name: `${plural}.${group}`,
+        }
+      : undefined;
+
   const rowActionTarget = useCallback(
     (row: ClusterRow): RowActionTarget => ({ ctx: row.ctx, group, version, plural, kind, obj: row.obj }),
     [group, version, plural, kind],
   );
 
+  const metricsLookup = useMemo(() => makeMetricsLookup(kind, podMetrics), [kind, podMetrics]);
+
   const columns = useMemo(() => {
     const ids = columnsForKind(kind, namespaced);
-    const cols = buildColumns(ids, { multiCluster: selected.length > 1, metrics: makeMetricsLookup(kind, podMetrics), nodeAllocation });
+    const opts = { multiCluster: selected.length > 1, metrics: metricsLookup, nodeAllocation, onLabelClick: addLabelFilter };
+    const cols = buildColumns(ids, opts);
     if (isCustomKind && printerCols?.length) {
-      const ageIdx = cols.findIndex((c) => c.field === 'age');
-      cols.splice(ageIdx === -1 ? cols.length : ageIdx, 0, ...buildCrdColumns(printerCols));
+      const crdIdx = cols.findIndex((c) => c.field === 'age');
+      cols.splice(crdIdx === -1 ? cols.length : crdIdx, 0, ...buildCrdColumns(printerCols));
     }
+    // Labels for every kind, right before Age.
+    const ageIdx = cols.findIndex((c) => c.field === 'age');
+    cols.splice(ageIdx === -1 ? cols.length : ageIdx, 0, ...buildColumns(['labels'], opts));
     cols.push({
       field: '_actions',
       headerName: '',
@@ -125,7 +172,7 @@ export function ResourceListPage() {
       renderCell: (p) => <RowActions target={rowActionTarget(p.row)} />,
     });
     return cols;
-  }, [kind, namespaced, selected.length, podMetrics, nodeAllocation, isCustomKind, printerCols, rowActionTarget]);
+  }, [kind, namespaced, selected.length, metricsLookup, nodeAllocation, isCustomKind, printerCols, rowActionTarget, addLabelFilter]);
   const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
 
   const supportsGvr = (r: ResourceKindInfo) => r.group === group && r.version === version && r.plural === plural;
@@ -158,15 +205,13 @@ export function ResourceListPage() {
     const params = new URLSearchParams();
     if (textFilter.trim()) params.set('q', textFilter.trim());
     if (labelSelector.trim()) params.set('label', labelSelector.trim());
-    if (fieldSelector.trim()) params.set('field', fieldSelector.trim());
     const path = `${kindPath}${params.toString() ? `?${params.toString()}` : ''}`;
     addSavedView({
       id: `view:${path}`,
-      title: `${resourceTitle}${textFilter || labelSelector || fieldSelector ? ' view' : ''}`,
+      title: `${resourceTitle}${textFilter || labelSelector ? ' view' : ''}`,
       path,
       textFilter: textFilter.trim() || undefined,
       labelSelector: labelSelector.trim() || undefined,
-      fieldSelector: fieldSelector.trim() || undefined,
     });
   };
 
@@ -174,7 +219,20 @@ export function ResourceListPage() {
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="h6">{resourceTitle}</Typography>
+          {crdSelection ? (
+            <Link
+              component="button"
+              variant="h6"
+              underline="hover"
+              color="inherit"
+              title={`Open CRD ${crdSelection.name}`}
+              onClick={() => pushDetail(crdSelection)}
+            >
+              {resourceTitle}
+            </Link>
+          ) : (
+            <Typography variant="h6">{resourceTitle}</Typography>
+          )}
         </Box>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
@@ -201,14 +259,15 @@ export function ResourceListPage() {
         rows={list.rows}
         columns={columns}
         loading={Object.values(list.status).some((s) => s.state === 'loading')}
+        kind={kind}
+        metricsLookup={metricsLookup}
         filter={textFilter}
         labelSelector={labelSelector}
-        fieldSelector={fieldSelector}
         onFilterChange={(value) => setQueryParam('q', value)}
         onLabelSelectorChange={(value) => setQueryParam('label', value)}
-        onFieldSelectorChange={(value) => setQueryParam('field', value)}
         onRowClick={(row) => {
           const next = new URLSearchParams(searchParams);
+          next.delete('field');
           next.set('sel', `${row.ctx}|${row.obj.metadata.namespace ?? ''}|${row.obj.metadata.name}`);
           setSearchParams(next);
         }}

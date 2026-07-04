@@ -90,6 +90,16 @@ export function ClusterSwitcher() {
     connect.mutate({ ctx: name, connect: !isSelected });
   };
 
+  // Row click switches to that cluster alone; the checkbox handles multi-select.
+  const handleSelectOnly = (name: string) => {
+    for (const other of selected) {
+      if (other !== name) connect.mutate({ ctx: other, connect: false });
+    }
+    if (!selected.includes(name)) connect.mutate({ ctx: name, connect: true });
+    setSelected([name]);
+    setAnchor(null);
+  };
+
   const only = selected.length === 1 ? selected[0] : undefined;
   const label = selected.length === 0 ? 'Select clusters' : (only ?? `${selected.length} clusters`);
   const onlyProtected = only ? !!contextSettings[only]?.protected : false;
@@ -111,8 +121,16 @@ export function ClusterSwitcher() {
           const isProtected = !!contextSettings[c.name]?.protected;
           const isReconnecting = reconnect.isPending && reconnect.variables === c.name;
           return (
-            <MenuItem key={c.name} onClick={() => handleToggle(c.name)} dense>
-              <Checkbox checked={selected.includes(c.name)} size="small" sx={{ p: 0.5, mr: 1 }} />
+            <MenuItem key={c.name} onClick={() => handleSelectOnly(c.name)} dense>
+              <Checkbox
+                checked={selected.includes(c.name)}
+                size="small"
+                sx={{ p: 0.5, mr: 1 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggle(c.name);
+                }}
+              />
               <ListItemIcon sx={{ minWidth: 28 }}>
                 {(connect.isPending && connect.variables?.ctx === c.name) || isReconnecting ? (
                   <CircularProgress size={12} />
