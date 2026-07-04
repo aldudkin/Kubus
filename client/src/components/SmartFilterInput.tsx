@@ -48,6 +48,8 @@ const HELP_SECTIONS = [
   },
 ] as const;
 
+const filterHelpPanel = <FilterHelpPanel />;
+
 interface Props {
   value: string;
   onChange: (value: string) => void;
@@ -210,7 +212,7 @@ export function SmartFilterInput({ value, onChange, kind, rows, inputRef }: Prop
                         },
                       }}
                     >
-                      <FilterHelpPanel />
+                      {filterHelpPanel}
                     </Popover>
                   </Box>
                 </InputAdornment>

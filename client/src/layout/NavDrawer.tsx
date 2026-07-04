@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 import Drawer from '@mui/material/Drawer';
@@ -243,6 +243,7 @@ export function NavDrawer() {
     return set;
   });
   const [filter, setFilter] = useState('');
+  const deferredFilter = useDeferredValue(filter);
 
   const toggleGroup = (title: string) =>
     setCollapsed((prev) => {
@@ -291,7 +292,7 @@ export function NavDrawer() {
     return map;
   }, [customKinds]);
 
-  const f = filter.toLowerCase();
+  const f = deferredFilter.toLowerCase();
   const matches = (label: string) => !f || label.toLowerCase().includes(f);
   // While filtering, always expand so matches are visible.
   const isOpen = (title: string) => !!f || !collapsed.has(title);

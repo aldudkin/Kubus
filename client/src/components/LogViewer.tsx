@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
@@ -219,6 +219,7 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
     });
   };
 
+  const deferredFilter = useDeferredValue(filter);
   const visible = useMemo(() => {
     let out = lines;
     if (levelFilter.size) {
@@ -227,15 +228,15 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
         return level !== undefined && levelFilter.has(level);
       });
     }
-    if (!filter) return out;
+    if (!deferredFilter) return out;
     try {
-      const re = new RegExp(filter, 'i');
+      const re = new RegExp(deferredFilter, 'i');
       return out.filter((l) => re.test(strippedOf(l)) || re.test(l.pod));
     } catch {
-      const f = filter.toLowerCase();
+      const f = deferredFilter.toLowerCase();
       return out.filter((l) => strippedOf(l).toLowerCase().includes(f) || l.pod.toLowerCase().includes(f));
     }
-  }, [lines, filter, levelFilter]);
+  }, [lines, deferredFilter, levelFilter]);
 
   const matches = useMemo(() => {
     if (!find) return [];

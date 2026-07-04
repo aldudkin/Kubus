@@ -49,6 +49,7 @@ type AuthMode = 'keep' | 'token' | 'client-cert';
 type ConnMode = 'direct' | 'ssh' | 'proxy';
 
 const PROXY_URL_RE = /^(socks5?|socks5h|https?):\/\//i;
+const SERVER_URL_RE = /^https?:\/\//i;
 
 /** Full edit of an existing cluster — same fields as "Add cluster", prefilled. */
 export function EditClusterDialog({ context: c, onClose }: { context: ContextInfo; onClose: () => void }) {
@@ -72,7 +73,7 @@ export function EditClusterDialog({ context: c, onClose }: { context: ContextInf
   });
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((f) => ({ ...f, [key]: value }));
 
-  const serverValid = /^https?:\/\//i.test(form.server.trim());
+  const serverValid = SERVER_URL_RE.test(form.server.trim());
   const authValid =
     form.auth === 'keep' ||
     (form.auth === 'token' ? !!form.token.trim() : !!form.cert.trim() && !!form.key.trim());

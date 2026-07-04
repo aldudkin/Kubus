@@ -271,22 +271,29 @@ function escapeRegExp(s: string): string {
 
 type StatusPredicate = (kind: string, obj: KubeObject) => boolean;
 
+const ERROR_STATUS_RE = /err|failed|backoff/;
+const COMPLETED_STATUS_RE = /succeeded|complete/;
+
 const STATUS_ALIASES: Record<string, StatusPredicate> = {
   crash: (k, o) => statusText(k, o).toLowerCase().includes('crashloop'),
   oom: (k, o) => statusText(k, o).toLowerCase().includes('oomkilled'),
-  error: (k, o) => /err|failed|backoff/.test(statusText(k, o).toLowerCase()),
+  error: (k, o) => ERROR_STATUS_RE.test(statusText(k, o).toLowerCase()),
   unhealthy: (k, o) => !isHealthy(k, o),
   healthy: (k, o) => isHealthy(k, o),
   ok: (k, o) => isHealthy(k, o),
-  completed: (k, o) => /succeeded|complete/.test(statusText(k, o).toLowerCase()),
+  completed: (k, o) => COMPLETED_STATUS_RE.test(statusText(k, o).toLowerCase()),
   degraded: (k, o) => statusText(k, o).toLowerCase() === 'degraded',
   progressing: (k, o) => statusText(k, o).toLowerCase() === 'progressing',
 };
 
 // ---- evaluation ----
 
+const haystackCache = new WeakMap<KubeObject, { ctx: string; kind: string; text: string }>();
+
 function freeTextHaystack(row: ClusterRow, kind: string): string {
   const obj = row.obj;
+  const cached = haystackCache.get(obj);
+  if (cached && cached.ctx === row.ctx && cached.kind === kind) return cached.text;
   const labels = Object.entries(obj.metadata.labels ?? {})
     .map(([k, v]) => `${k}=${v}`)
     .join(' ');
@@ -296,7 +303,9 @@ function freeTextHaystack(row: ClusterRow, kind: string): string {
     const ev = eventFields(obj);
     parts.push(ev.reason, ev.message, ev.object);
   }
-  return parts.join(' ').toLowerCase();
+  const text = parts.join(' ').toLowerCase();
+  haystackCache.set(obj, { ctx: row.ctx, kind, text });
+  return text;
 }
 
 function matchClauseValue(clause: FilterClause, value: string, row: ClusterRow, ctx: FilterContext): boolean {

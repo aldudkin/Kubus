@@ -71,6 +71,8 @@ interface CrdSpec {
 
 const MAX_SCHEMA_DEPTH = 12;
 
+const TYPE_BASE_RE = /[<( ]/;
+
 const STANDARD_ROOT_FIELDS: Record<string, JsonSchema> = {
   apiVersion: {
     type: 'string',
@@ -352,7 +354,7 @@ function mergeSchema(base: JsonSchema | undefined, override: JsonSchema | undefi
 }
 
 function typeColor(typeLabel: string): string {
-  const base = typeLabel.split(/[<( ]/)[0];
+  const base = typeLabel.split(TYPE_BASE_RE)[0];
   switch (base) {
     case 'string':
       return 'success.main';

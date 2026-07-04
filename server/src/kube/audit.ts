@@ -368,26 +368,27 @@ function auditNetwork(ctx: string, lists: Lists, emit: Emit): void {
 
 function auditPdb(ctx: string, sources: PodSource[], lists: Lists, emit: Emit): void {
   interface PdbSelector {
-    namespace: string;
-    matchLabels: Record<string, string>;
+    labelEntries: Array<[string, string]>;
     hasExpressions: boolean;
   }
-  const pdbs: PdbSelector[] = lists.poddisruptionbudgets.map((pdb) => {
+  const pdbsByNs = new Map<string, PdbSelector[]>();
+  for (const pdb of lists.poddisruptionbudgets) {
     const selector = (pdb.spec as { selector?: { matchLabels?: Record<string, string>; matchExpressions?: unknown[] } } | undefined)?.selector;
-    return {
-      namespace: pdb.metadata.namespace ?? '',
-      matchLabels: selector?.matchLabels ?? {},
+    const ns = pdb.metadata.namespace ?? '';
+    const entry: PdbSelector = {
+      labelEntries: Object.entries(selector?.matchLabels ?? {}),
       hasExpressions: !!selector?.matchExpressions?.length,
     };
-  });
+    const list = pdbsByNs.get(ns);
+    if (list) list.push(entry);
+    else pdbsByNs.set(ns, [entry]);
+  }
   for (const source of sources) {
     if (source.kind !== 'Deployment' && source.kind !== 'StatefulSet') continue;
     if ((source.replicas ?? 1) < 2) continue;
-    const covered = pdbs.some((pdb) => {
-      if (pdb.namespace !== (source.ref.namespace ?? '')) return false;
+    const covered = (pdbsByNs.get(source.ref.namespace ?? '') ?? []).some((pdb) => {
       if (pdb.hasExpressions) return true; // conservatively assume it matches
-      const entries = Object.entries(pdb.matchLabels);
-      return entries.length > 0 && entries.every(([k, v]) => source.templateLabels[k] === v);
+      return pdb.labelEntries.length > 0 && pdb.labelEntries.every(([k, v]) => source.templateLabels[k] === v);
     });
     if (!covered) emit('no-pdb', source.ref, `${source.replicas} replicas but no matching PodDisruptionBudget`);
   }

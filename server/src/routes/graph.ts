@@ -82,7 +82,6 @@ const STATE_WARNING_TERMS = new Set(['pending', 'progressing', 'reconciling']);
 function statusFor(kind: string, obj: KubeObject): { status: GraphNodeStatus; reason?: string } {
   const st = obj.status ?? {};
   const sp = obj.spec ?? {};
-  const ready = ((st.conditions ?? []) as Array<{ type?: string; status?: string; reason?: string; message?: string }>).find((c) => c.type === 'Ready');
   if (kind === 'Pod') {
     const phase = st.phase as string | undefined;
     const statuses = (st.containerStatuses ?? []) as Array<{ restartCount?: number; state?: { waiting?: { reason?: string; message?: string } } }>;
@@ -116,6 +115,7 @@ function statusFor(kind: string, obj: KubeObject): { status: GraphNodeStatus; re
     if (phase === 'Failed' || phase === 'Lost') return { status: 'error', reason: phase };
     if (phase) return { status: 'warning', reason: phase };
   }
+  const ready = ((st.conditions ?? []) as Array<{ type?: string; status?: string; reason?: string; message?: string }>).find((c) => c.type === 'Ready');
   if (kind === 'Node') {
     if (ready?.status === 'True') return { status: 'success' };
     if (ready?.status === 'False') return { status: 'error', reason: ready.reason ?? 'NotReady' };
