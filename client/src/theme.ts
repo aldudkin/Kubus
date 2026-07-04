@@ -1,5 +1,8 @@
+import type { ElementType } from 'react';
 import { alpha, createTheme, type Theme } from '@mui/material/styles';
 import type {} from '@mui/x-data-grid/themeAugmentation';
+
+const modalBackdropAlpha = 0.5;
 
 const darkColors = {
         primary: '#6e8bfb',
@@ -43,12 +46,27 @@ const lightColors = {
 
 /** Colors the desktop app paints the native window-controls overlay with —
  *  must match the rendered TopBar (AppBar uses `sidebar` as background). */
-export function titleBarColors(mode: 'light' | 'dark'): { color: string; symbolColor: string } {
+export function titleBarColors(mode: 'light' | 'dark', options: { dim?: number } = {}): { color: string; symbolColor: string } {
   const c = mode === 'dark' ? darkColors : lightColors;
-  return { color: c.sidebar, symbolColor: c.textPrimary };
+  const dim = options.dim ?? 0;
+  return {
+    color: compositeModalBackdrop(c.sidebar, dim),
+    symbolColor: compositeModalBackdrop(c.textPrimary, dim),
+  };
 }
 
-export function buildTheme(mode: 'light' | 'dark'): Theme {
+/** Composite the modal backdrop (black at modalBackdropAlpha × backdropOpacity)
+ *  over an opaque hex color, so the native overlay can match the web backdrop
+ *  at any point during its fade. */
+function compositeModalBackdrop(hex: string, backdropOpacity: number): string {
+  if (backdropOpacity <= 0) return hex;
+  const factor = 1 - modalBackdropAlpha * Math.min(1, backdropOpacity);
+  const value = hex.replace('#', '');
+  const channels = [0, 2, 4].map((offset) => parseInt(value.slice(offset, offset + 2), 16));
+  return `#${channels.map((channel) => Math.round(channel * factor).toString(16).padStart(2, '0')).join('')}`;
+}
+
+export function buildTheme(mode: 'light' | 'dark', options: { modalBackdrop?: ElementType } = {}): Theme {
   const dark = mode === 'dark';
   const c = dark ? darkColors : lightColors;
 
@@ -76,6 +94,20 @@ export function buildTheme(mode: 'light' | 'dark'): Theme {
       button: { fontWeight: 550 },
     },
     components: {
+      ...(options.modalBackdrop
+        ? {
+            MuiDrawer: {
+              defaultProps: {
+                slots: { backdrop: options.modalBackdrop },
+              },
+            },
+            MuiModal: {
+              defaultProps: {
+                slots: { backdrop: options.modalBackdrop },
+              },
+            },
+          }
+        : {}),
       MuiCssBaseline: {
         styleOverrides: {
           '*': {
@@ -152,6 +184,7 @@ export function buildTheme(mode: 'light' | 'dark'): Theme {
         },
       },
       MuiDialog: {
+        defaultProps: options.modalBackdrop ? { slots: { backdrop: options.modalBackdrop } } : undefined,
         styleOverrides: {
           paper: {
             borderRadius: 12,

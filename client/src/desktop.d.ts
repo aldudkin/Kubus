@@ -4,6 +4,8 @@ declare global {
   /** Bridge exposed by the Electron preload (absent in regular browsers). */
   interface Window {
     kubusDesktop?: {
+      /** Electron's process.platform ('linux', 'win32', 'darwin', …). */
+      platform: string;
       stateStorage: {
         getItem(name: string): string | null;
         setItem(name: string, value: string): void;
