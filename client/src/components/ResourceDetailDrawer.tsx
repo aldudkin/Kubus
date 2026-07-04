@@ -82,7 +82,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   const hasRolloutHistory = sel?.kind === 'Deployment' || sel?.kind === 'StatefulSet';
   const showMap = !isCrd;
   const drawerTopOffset = 52;
-  const drawerViewportSx = {
+  const drawerPaperSx = {
     top: `${drawerTopOffset}px`,
     height: `calc(100% - ${drawerTopOffset}px)`,
   };
@@ -109,9 +109,8 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
       open={!!sel}
       onClose={onClose}
       slotProps={{
-        root: { sx: drawerViewportSx },
-        backdrop: { sx: { top: `${drawerTopOffset}px` } },
-        paper: { sx: { ...drawerViewportSx, width: drawerWidth, maxWidth: '100vw' } },
+        backdrop: { invisible: true },
+        paper: { sx: { ...drawerPaperSx, width: drawerWidth, maxWidth: '100vw' } },
       }}
     >
       {sel && (

@@ -26,6 +26,7 @@ app.setName('Kubus');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
 
 // Must match the client TopBar height: its toolbar doubles as the titlebar.
 const TITLEBAR_HEIGHT = 52;
@@ -141,9 +142,14 @@ function overlayColors(): { color: string; symbolColor: string } {
   // Match the client's default theme (prefers-color-scheme) until the app
   // reports its actual theme over the bridge; values = titleBarColors() in
   // client/src/theme.ts (the TopBar's AppBar background).
-  return nativeTheme.shouldUseDarkColors
-    ? { color: '#151518', symbolColor: '#e6e6ea' }
-    : { color: '#f4f4f5', symbolColor: '#1c1c21' };
+  // On Linux the overlay background is fully transparent: the web AppBar (and
+  // any modal backdrop) shows through, so that region dims in the same
+  // compositor frame as the rest of the page — only the glyphs are native.
+  const dark = nativeTheme.shouldUseDarkColors;
+  return {
+    color: isLinux ? '#00000000' : dark ? '#151518' : '#f4f4f5',
+    symbolColor: dark ? '#e6e6ea' : '#1c1c21',
+  };
 }
 
 function versionParts(version: string): [number, number, number] | undefined {

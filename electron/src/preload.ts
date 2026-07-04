@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 // Desktop bridge for stable client state plus native window integrations.
 contextBridge.exposeInMainWorld('kubusDesktop', {
+  platform: process.platform,
   stateStorage: {
     getItem(name: string): string | null {
       return ipcRenderer.sendSync('kubus:state:get-item', name) as string | null;
