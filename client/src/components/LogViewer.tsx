@@ -22,6 +22,7 @@ import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import type { LogServerMessage } from '@kubus/shared';
 import { wsUrl } from '../api/http.js';
 import { useDockStore, type LogsTab } from '../state/dock.js';
+import { copyToClipboard } from '../clipboard.js';
 import { useLogPrefsStore, type TsMode } from '../state/log-prefs.js';
 import { useUiPrefsStore } from '../state/prefs.js';
 import { detectLevel, LOG_LEVELS, markSegs, parseLine, stripAnsi, type LogLevel, type Seg } from './log-format.js';
@@ -307,7 +308,7 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
 
   const copyVisible = async () => {
     const text = visible.map((l) => `${l.ts ?? ''} [${l.pod}/${l.container}] ${strippedOf(l)}`).join('\n');
-    await navigator.clipboard.writeText(text);
+    await copyToClipboard(text);
   };
 
   const recentRate = useMemo(() => {

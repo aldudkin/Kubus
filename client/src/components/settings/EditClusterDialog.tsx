@@ -23,6 +23,7 @@ import Typography from '@mui/material/Typography';
 import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
 import type { ClusterAuthType, ContextInfo } from '@kubus/shared';
 import { useClusterCa, useEditCluster, useTestConnection } from '../../api/queries.js';
+import { copyToClipboard } from '../../clipboard.js';
 import { SshJumpHostField, SSH_DESTINATION_RE } from './SshJumpHostField.js';
 
 /** A "?" icon that reveals a fuller explanation on hover — keeps field labels short. */
@@ -168,7 +169,7 @@ export function EditClusterDialog({ context: c, onClose }: { context: ContextInf
                     Current CA certificate
                   </Typography>
                   <Box>
-                    <Button size="small" onClick={() => navigator.clipboard?.writeText(ca.data?.pem ?? '')} disabled={!ca.data?.pem}>
+                    <Button size="small" onClick={() => void copyToClipboard(ca.data?.pem ?? '')} disabled={!ca.data?.pem}>
                       Copy
                     </Button>
                     <Button size="small" onClick={() => setRevealCa(false)}>

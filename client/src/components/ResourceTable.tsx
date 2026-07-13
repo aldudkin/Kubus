@@ -11,6 +11,7 @@ import type { ClusterRow } from '../api/queries.js';
 import { matchesPlainText, matchesSmartFilter, parseSmartFilter } from '../smart-filter.js';
 import { joinLabelSelector, splitLabelSelector } from '../label-selector.js';
 import { SmartFilterInput } from './SmartFilterInput.js';
+import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from './CellCopy.js';
 import type { MetricsLookup } from './columns.js';
 import { useUiPrefsStore } from '../state/prefs.js';
 
@@ -129,11 +130,8 @@ export function ResourceTable({
       if (stored !== undefined) {
         next = { ...next, width: stored, flex: undefined };
       }
-      // If this column draws custom cells, make sure they lay out correctly
-      if (next.renderCell && !next.display) {
-        next = { ...next, display: 'flex' as const };
-      }
-      result.push(next);
+      // Adds the hover copy button and sets flex display on every column
+      result.push(withCellCopy(next));
     }
 
     // Hand back the whole adjusted list.
@@ -280,6 +278,7 @@ export function ResourceTable({
         columnVisibilityModel={visibility}
         onColumnVisibilityModelChange={setVisibility}
         onColumnWidthChange={tableId ? (params) => setColumnWidth(tableId, params.colDef.field, params.width) : undefined}
+        onCellKeyDown={handleCopyCellKeyDown}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
         sx={{
           border: 0,
@@ -287,6 +286,7 @@ export function ResourceTable({
           minHeight: 0,
           '& .MuiDataGrid-row': { cursor: onRowClick ? 'pointer' : 'default' },
           '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
+          ...copyCellGridSx,
         }}
       />
     </Box>
