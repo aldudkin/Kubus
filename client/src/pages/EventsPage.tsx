@@ -20,6 +20,7 @@ import { useApiResourcesForContexts, useWatchedList, type ClusterRow } from '../
 import { useClustersStore } from '../state/clusters.js';
 import { useDetailStore } from '../state/detail.js';
 import { AgeCell } from '../components/AgeCell.js';
+import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { EmptyState } from '../components/EmptyState.js';
 
@@ -147,8 +148,8 @@ export function EventsPage() {
     });
   };
 
-  const columns: GridColDef<EventRow>[] = useMemo(
-    () => [
+  const columns: GridColDef<EventRow>[] = useMemo(() => {
+    const defs: GridColDef<EventRow>[] = [
       {
         field: 'type',
         headerName: 'Type',
@@ -183,9 +184,9 @@ export function EventsPage() {
         valueGetter: (_v, row) => row.lastSeen ?? '',
         renderCell: (p) => <AgeCell timestamp={p.row.lastSeen} />,
       },
-    ],
-    [selected.length],
-  );
+    ];
+    return defs.map(withCellCopy);
+  }, [selected.length]);
 
   if (selected.length === 0) {
     return <EmptyState icon={<HubOutlinedIcon />} title="No cluster selected" subtitle="Pick one or more clusters from the switcher in the top bar." />;
@@ -243,6 +244,7 @@ export function EventsPage() {
         getRowId={(r) => r.id}
         density="compact"
         onRowClick={(p) => openInvolved(p.row as EventRow)}
+        onCellKeyDown={handleCopyCellKeyDown}
         initialState={{ sorting: { sortModel: [{ field: 'lastSeen', sort: 'desc' }] } }}
         sx={{
           border: 0,
@@ -250,6 +252,7 @@ export function EventsPage() {
           minHeight: 0,
           '& .MuiDataGrid-row': { cursor: 'pointer' },
           '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
+          ...copyCellGridSx,
         }}
       />
     </Box>
