@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
+import CircularProgress from '@mui/material/CircularProgress';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
@@ -22,10 +23,10 @@ import {
   type NodeProps,
   type ReactFlowInstance,
 } from '@xyflow/react';
-import type { GraphEdge, GraphNode, GraphNodeStatus } from '@kubus/shared';
+import type { GraphEdge, GraphNode, GraphNodeStatus, RelationshipGraph } from '@kubus/shared';
 import { useTopologyGraphs } from '../api/queries.js';
 import { useDetailStore } from '../state/detail.js';
-import { layoutTopology, routeEdges, topologyNodeBox, type RoutePoint, type TopologyLayout } from './topology-layout.js';
+import { cachedTopologyLayout, layoutTopology, routeEdges, topologyNodeBox, type RoutePoint, type TopologyLayout } from './topology-layout.js';
 import type { TopologyGraphProps } from './TopologyGraph.js';
 
 interface TopologyNodeData extends Record<string, unknown> {
@@ -317,19 +318,35 @@ export default function TopologyGraphImpl({
   const openDetail = useDetailStore((s) => s.open);
   const pushDetail = useDetailStore((s) => s.push);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
-  const [flow, setFlow] = useState<FlowState>(emptyFlow);
+  // Remounts (tab switches, drawer reopens) reuse the cached layout for the
+  // current data synchronously, so the finished graph is on screen from the
+  // very first frame instead of after an async layout pass.
+  const laidOut = useRef<{ graphs: RelationshipGraph[] | undefined; hide: boolean } | null>(null);
+  const [flow, setFlow] = useState<FlowState>(() => {
+    const cached = cachedTopologyLayout(graphs, hideDisconnected);
+    if (!cached) return emptyFlow;
+    laidOut.current = { graphs, hide: hideDisconnected };
+    return toFlowState(cached);
+  });
   const [layoutPending, setLayoutPending] = useState(false);
   const instanceRef = useRef<ReactFlowInstance<TopologyFlowNode, TopologyFlowEdge> | null>(null);
 
   // ELK layout is async, so positions land in state instead of a useMemo.
   useEffect(() => {
+    if (laidOut.current && laidOut.current.graphs === graphs && laidOut.current.hide === hideDisconnected) return;
     let cancelled = false;
     setLayoutPending(true);
     layoutTopology(graphs, hideDisconnected)
       .then((layout) => {
         if (cancelled) return;
-        setFlow(toFlowState(layout));
-        setLayoutPending(false);
+        laidOut.current = { graphs, hide: hideDisconnected };
+        // Transition: rendering hundreds of nodes shouldn't block clicks/pans.
+        // layoutPending clears inside it so the loading state holds until the
+        // graph actually commits.
+        startTransition(() => {
+          setFlow(toFlowState(layout));
+          setLayoutPending(false);
+        });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -400,6 +417,9 @@ export default function TopologyGraphImpl({
     [activeSelectedNodeId, flow.edges],
   );
   const { warnings, problemNodes } = flow;
+  // While the graph fetch or the layout is still running there is nothing to
+  // count yet — a "0 nodes / 0 links" panel would read as an empty cluster.
+  const loading = nodes.length === 0 && (isLoading || layoutPending);
 
   const inspectNode = (node: Node) => {
     const graphNode = (node.data as TopologyNodeData).graphNode;
@@ -479,6 +499,7 @@ export default function TopologyGraphImpl({
         <Controls />
       </ReactFlow>
 
+      {!loading && (
       <Box
         sx={{
           position: 'absolute',
@@ -515,6 +536,7 @@ export default function TopologyGraphImpl({
           </Typography>
         )}
       </Box>
+      )}
 
       {!isLoading && !layoutPending && nodes.length === 0 && (
         <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
@@ -527,11 +549,14 @@ export default function TopologyGraphImpl({
         </Box>
       )}
 
-      {isLoading && (
-        <Box sx={{ position: 'absolute', left: 12, bottom: 12, bgcolor: 'background.paper', px: 1, py: 0.5, borderRadius: 1, border: 1, borderColor: 'divider', boxShadow: 2 }}>
-          <Typography variant="caption" color="text.secondary">
-            Loading topology…
-          </Typography>
+      {loading && (
+        <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
+          <Stack spacing={1} sx={{ alignItems: 'center' }}>
+            <CircularProgress size={24} />
+            <Typography variant="body2" color="text.secondary">
+              Loading topology…
+            </Typography>
+          </Stack>
         </Box>
       )}
     </Box>
