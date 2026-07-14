@@ -17,6 +17,7 @@ import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRun
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
+import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
 import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup } from '../components/columns.js';
 import type { ResourceSelection } from '../components/ResourceDetailDrawer.js';
 import { useDetailStore } from '../state/detail.js';
@@ -91,6 +92,10 @@ export function ResourceListPage() {
   const resourceGvk = gvkLabel({ group, version, kind });
   const namespaced = kindInfo?.namespaced ?? true;
   const isCustomKind = !!kindInfo?.custom;
+  const resourceInfo = useMemo<ResourceKindInfo>(
+    () => kindInfo ?? { group, version, plural, kind, namespaced: builtinKind?.namespaced ?? true, verbs: [] },
+    [kindInfo, group, version, plural, kind, builtinKind],
+  );
 
   const [searchParams, setSearchParams] = useSearchParams();
   const textFilter = searchParams.get('q') ?? '';
@@ -104,6 +109,7 @@ export function ResourceListPage() {
   const nodeAllocation = useMemo(() => (behaviorKind === 'Node' ? makeNodeAllocationLookup(nodePods.rows) : undefined), [behaviorKind, nodePods.rows]);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [apiResourceOpen, setApiResourceOpen] = useState(false);
   const [selectedRows, setSelectedRows] = useState<ClusterRow[]>([]);
   const [contextAction, setContextAction] = useState<{ target: RowActionTarget; mouseX: number; mouseY: number } | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -149,21 +155,22 @@ export function ResourceListPage() {
     [setSearchParams],
   );
 
-  // CRD printer columns: taken from the first selected cluster that serves
-  // this GVR — multi-cluster CRD definition drift is not reconciled.
-  const crdCtx = useMemo(
+  // Schema and CRD printer columns come from the first selected cluster that
+  // serves this GVR — multi-cluster definition drift is not reconciled.
+  const resourceCtx = useMemo(
     () => selected.find((c) => (apiResources?.byContext[c] ?? []).some((r) => r.group === group && r.version === version && r.plural === plural)),
     [selected, apiResources, group, version, plural],
   );
-  const { data: printerCols } = useCrdColumns(crdCtx, group, version, plural, isCustomKind);
+  const { data: printerCols } = useCrdColumns(resourceCtx, group, version, plural, isCustomKind);
 
-  // For CRD-backed kinds the page title links to the defining CRD.
+  // CRD-backed kinds additionally expose their defining CRD from the generic
+  // API Resource view.
   const pushDetail = useDetailStore((s) => s.push);
   const openDetail = useDetailStore((s) => s.open);
   const crdSelection: ResourceSelection | undefined =
-    isCustomKind && crdCtx && group
+    isCustomKind && resourceCtx && group
       ? {
-          ctx: crdCtx,
+          ctx: resourceCtx,
           group: 'apiextensions.k8s.io',
           version: 'v1',
           plural: 'customresourcedefinitions',
@@ -247,20 +254,16 @@ export function ResourceListPage() {
       <DetailUrlSync sel={sel} />
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-          {crdSelection ? (
-            <Link
-              component="button"
-              variant="h6"
-              underline="hover"
-              color="primary"
-              title={`Open CRD ${crdSelection.name}`}
-              onClick={() => pushDetail(crdSelection)}
-            >
-              {resourceTitle}
-            </Link>
-          ) : (
-            <Typography variant="h6">{resourceTitle}</Typography>
-          )}
+          <Link
+            component="button"
+            variant="h6"
+            underline="hover"
+            color="primary"
+            title={`Open API resource ${resourceGvk}`}
+            onClick={() => setApiResourceOpen(true)}
+          >
+            {resourceTitle}
+          </Link>
           <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
             {resourceGvk}
           </Typography>
@@ -363,6 +366,20 @@ export function ResourceListPage() {
           onClose={() => setContextMenuOpen(false)}
         />
       )}
+      <ApiResourceDrawer
+        open={apiResourceOpen}
+        ctx={resourceCtx}
+        resource={resourceInfo}
+        onClose={() => setApiResourceOpen(false)}
+        onOpenCrd={
+          crdSelection
+            ? () => {
+                setApiResourceOpen(false);
+                pushDetail(crdSelection);
+              }
+            : undefined
+        }
+      />
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth slotProps={{ paper: { sx: { height: '80vh' } } }}>
         <DialogTitle>Create resource{selected.length > 1 ? ` on ${selected[0]}` : ''}</DialogTitle>
         <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column' }}>
