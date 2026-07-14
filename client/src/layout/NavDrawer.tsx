@@ -38,6 +38,7 @@ const WIDTH = 228;
 // Indent of group items so they line up under the group label (button pl 16px + icon 26px).
 const ITEM_INDENT = '42px';
 const FAVORITE_DRAG_TYPE = 'application/x-kubus-favorite';
+const CUSTOM_GROUP_PREFIX = 'custom:';
 
 /**
  * Browser-style modifiers on nav links: Ctrl/Cmd+click opens a background
@@ -450,8 +451,9 @@ export function NavDrawer() {
 
   const f = deferredFilter.toLowerCase();
   const matches = (label: string) => !f || label.toLowerCase().includes(f);
-  // While filtering, always expand so matches are visible.
-  const isOpen = (title: string) => !!f || !collapsed.has(title);
+  // While filtering, always expand so matches are visible. CRD API groups are
+  // discovered dynamically, so they use the set as an explicit open override.
+  const isOpen = (title: string) => !!f || (title.startsWith(CUSTOM_GROUP_PREFIX) ? collapsed.has(title) : !collapsed.has(title));
   const canReorderFavorites = favorites.length > 1 && !f;
   const clearFavoriteDrag = () => {
     setDraggingFavoriteId(null);
@@ -648,7 +650,7 @@ export function NavDrawer() {
                 const groupMatches = matches(groupName);
                 const visible = groupMatches ? kinds : kinds.filter((k) => matches(k.kind));
                 if (!visible.length) return null;
-                const collapseKey = `custom:${groupName}`;
+                const collapseKey = `${CUSTOM_GROUP_PREFIX}${groupName}`;
                 return (
                   <Box key={groupName}>
                     <ListItemButton
