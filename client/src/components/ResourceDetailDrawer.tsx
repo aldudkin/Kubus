@@ -48,9 +48,10 @@ interface Props {
   sel: ResourceSelection | undefined;
   onClose: () => void;
   onBack?: () => void;
+  inline?: boolean;
 }
 
-export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
+export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: Props) {
   const [tab, setTab] = useState('overview');
   const [reveal, setReveal] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
@@ -132,11 +133,24 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   return (
     <Drawer
       anchor="right"
-      open={!!sel}
+      variant={inline ? 'permanent' : 'temporary'}
+      open={inline || !!sel}
       onClose={onClose}
+      sx={
+        inline
+          ? {
+              width: '100%',
+              height: '100%',
+              // zIndex auto: embedded in the page flow, the paper must not
+              // keep the drawer's modal-level 1200 or it buries the panel's
+              // collapse/resize handles.
+              '& .MuiDrawer-paper': { position: 'relative', inset: 0, width: '100%', height: '100%', border: 0, zIndex: 'auto' },
+            }
+          : undefined
+      }
       slotProps={{
         backdrop: { invisible: true },
-        paper: { sx: { ...drawerPaperSx, width: drawerWidth, maxWidth: '100vw' } },
+        paper: { sx: inline ? undefined : { ...drawerPaperSx, width: drawerWidth, maxWidth: '100vw' } },
       }}
     >
       {sel && (
@@ -184,12 +198,14 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
             </Box>
             <Box sx={{ flex: 1 }} />
             {obj && <RowActions target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
-            <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
-              <IconButton onClick={() => setFullScreen((v) => !v)} aria-label={fullScreen ? 'Restore drawer' : 'Full screen'}>
-                {fullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
-              </IconButton>
-            </Tooltip>
-            <IconButton onClick={onClose}>
+            {!inline && (
+              <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
+                <IconButton onClick={() => setFullScreen((v) => !v)} aria-label={fullScreen ? 'Restore drawer' : 'Full screen'}>
+                  {fullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+                </IconButton>
+              </Tooltip>
+            )}
+            <IconButton onClick={onClose} aria-label="Close resource details">
               <CloseIcon />
             </IconButton>
           </Stack>
@@ -261,6 +277,10 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
       )}
     </Drawer>
   );
+}
+
+export function ResourceDetailPanel(props: Omit<Props, 'inline'>) {
+  return <ResourceDetailDrawer {...props} inline />;
 }
 
 function OverviewForKind({ kind, obj, ctx }: { kind: string | undefined; obj: KubeObject; ctx: string }) {

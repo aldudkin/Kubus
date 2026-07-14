@@ -21,6 +21,7 @@ export function AppShell() {
   const dockRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const detailIsEmbedded = location.pathname.startsWith('/r/');
 
   // Closing the drawer via X/Escape/backdrop also drops the ?sel deep link
   // from the current tab's URL, so the tab doesn't reopen the drawer on its
@@ -76,7 +77,7 @@ export function AppShell() {
           </Box>
         </Box>
       </Box>
-      <ResourceDetailDrawer sel={stack.at(-1)} onClose={handleDrawerClose} onBack={stack.length > 1 ? back : undefined} />
+      <ResourceDetailDrawer sel={detailIsEmbedded ? undefined : stack.at(-1)} onClose={handleDrawerClose} onBack={stack.length > 1 ? back : undefined} />
     </Box>
   );
 }
