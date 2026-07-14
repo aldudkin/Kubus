@@ -33,7 +33,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     ...init,
     headers: {
       authorization: `Bearer ${token}`,
-      ...(init?.headers ?? {}),
+      ...init?.headers,
     },
   });
   const text = await res.text();
@@ -56,7 +56,7 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
     ...init,
     headers: {
       authorization: `Bearer ${token}`,
-      ...(init?.headers ?? {}),
+      ...init?.headers,
     },
   });
   if (!res.ok) {

@@ -42,10 +42,6 @@ interface RelationHint {
   selector?: Record<string, string>;
 }
 
-interface LabelSelector {
-  matchLabels?: Record<string, string>;
-}
-
 interface FocusQuery {
   namespace?: string;
   focusGroup?: string;

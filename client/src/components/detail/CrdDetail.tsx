@@ -383,7 +383,7 @@ function mergedProperties(schema: JsonSchema | undefined, definitions: Record<st
   const resolved = resolveSchema(schema, definitions);
   return {
     ...resolved.allOf?.reduce<Record<string, JsonSchema>>((acc, branch) => ({ ...acc, ...mergedProperties(branch, definitions) }), {}),
-    ...(resolved.properties ?? {}),
+    ...resolved.properties,
   };
 }
 

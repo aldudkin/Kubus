@@ -40,6 +40,7 @@ jobs:
             ~\AppData\Local\electron-builder\Cache
           key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       # build first: @kubus/shared (and /server for electron) resolve types
       # from their dist/, which doesn't exist on a fresh checkout
       - run: pnpm build

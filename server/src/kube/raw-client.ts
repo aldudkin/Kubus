@@ -82,7 +82,7 @@ export class RawClient {
     } else if (applied) {
       Object.assign(baseHeaders, applied as Record<string, string>);
     }
-    requestInit.headers = { ...baseHeaders, ...(init?.headers ?? {}) };
+    requestInit.headers = { ...baseHeaders, ...init?.headers };
     return fetch(this.serverUrl() + path, requestInit);
   }
 
