@@ -108,7 +108,11 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
     top: `${drawerTopOffset}px`,
     height: `calc(100% - ${drawerTopOffset}px)`,
   };
-  const drawerWidth = fullScreen ? '100vw' : tab === 'map' ? 'min(1060px, 92vw)' : tab.startsWith('crd:') ? 'min(920px, 90vw)' : 'min(720px, 80vw)';
+  const drawerWidth = fullScreen
+    ? '100vw'
+    : tab === 'map'
+      ? 'min(1060px, 92vw)'
+      : 'min(720px, 80vw)';
   const mapNamespaces = sel?.namespace ? [sel.namespace] : [];
 
   const handleApply = async (text: string) => {
