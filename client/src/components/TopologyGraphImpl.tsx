@@ -314,7 +314,7 @@ export default function TopologyGraphImpl({
   emptyTitle = 'No connected topology found',
 }: TopologyGraphProps) {
   const theme = useTheme();
-  const { data: graphs, isLoading } = useTopologyGraphs(contexts, namespaces, focus);
+  const { data: graphs, isLoading, isPlaceholderData } = useTopologyGraphs(contexts, namespaces, focus);
   const openDetail = useDetailStore((s) => s.open);
   const pushDetail = useDetailStore((s) => s.push);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
@@ -417,9 +417,14 @@ export default function TopologyGraphImpl({
     [activeSelectedNodeId, flow.edges],
   );
   const { warnings, problemNodes } = flow;
-  // While the graph fetch or the layout is still running there is nothing to
-  // count yet — a "0 nodes / 0 links" panel would read as an empty cluster.
-  const loading = nodes.length === 0 && (isLoading || layoutPending);
+  // keepPreviousData preserves the prior graph while a new scope is fetched.
+  // Keep it visible for a fast transition, but mark it as stale until both the
+  // request and layout for the current data have completed.
+  const layoutOutOfDate =
+    graphs !== undefined && (laidOut.current?.graphs !== graphs || laidOut.current.hide !== hideDisconnected);
+  const topologyPending = isPlaceholderData || layoutPending || layoutOutOfDate;
+  const loading = nodes.length === 0 && (isLoading || topologyPending);
+  const updating = nodes.length > 0 && topologyPending;
 
   const inspectNode = (node: Node) => {
     const graphNode = (node.data as TopologyNodeData).graphNode;
@@ -474,6 +479,7 @@ export default function TopologyGraphImpl({
           px: 0.5,
         },
       }}
+      aria-busy={loading || updating}
     >
       <ReactFlow
         nodes={nodes}
@@ -499,7 +505,7 @@ export default function TopologyGraphImpl({
         <Controls />
       </ReactFlow>
 
-      {!loading && (
+      {!loading && !updating && (
       <Box
         sx={{
           position: 'absolute',
@@ -538,7 +544,7 @@ export default function TopologyGraphImpl({
       </Box>
       )}
 
-      {!isLoading && !layoutPending && nodes.length === 0 && (
+      {!isLoading && !topologyPending && nodes.length === 0 && (
         <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
           <Box sx={{ textAlign: 'center', px: 2 }}>
             <Typography variant="subtitle2">{emptyTitle}</Typography>
@@ -549,12 +555,38 @@ export default function TopologyGraphImpl({
         </Box>
       )}
 
-      {loading && (
-        <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
-          <Stack spacing={1} sx={{ alignItems: 'center' }}>
+      {(loading || updating) && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 1,
+            display: 'grid',
+            placeItems: 'center',
+            pointerEvents: updating ? 'auto' : 'none',
+            bgcolor: updating ? 'action.disabledBackground' : undefined,
+          }}
+        >
+          <Stack
+            spacing={1}
+            role="status"
+            aria-live="polite"
+            sx={{
+              alignItems: 'center',
+              ...(updating && {
+                bgcolor: 'background.paper',
+                border: 1,
+                borderColor: 'divider',
+                borderRadius: 1,
+                boxShadow: 2,
+                px: 2,
+                py: 1.5,
+              }),
+            }}
+          >
             <CircularProgress size={24} />
             <Typography variant="body2" color="text.secondary">
-              Loading topology…
+              {updating ? 'Updating topology…' : 'Loading topology…'}
             </Typography>
           </Stack>
         </Box>
