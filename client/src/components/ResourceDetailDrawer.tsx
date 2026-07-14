@@ -14,6 +14,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
+import type { SxProps, Theme } from '@mui/material/styles';
 import { dump as dumpYaml } from 'js-yaml';
 import { gvkForResource, type KubeObject } from '@kubus/shared';
 import { useApplyResource, useDryRunResource, useResource, useResourceEvents } from '../api/queries.js';
@@ -109,6 +110,18 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
     top: `${drawerTopOffset}px`,
     height: `calc(100% - ${drawerTopOffset}px)`,
   };
+  const inlinePaperSx: SxProps<Theme> = fullScreen
+    ? {
+        position: 'fixed',
+        top: `${drawerTopOffset}px`,
+        right: 0,
+        bottom: 0,
+        width: '100vw',
+        height: `calc(100% - ${drawerTopOffset}px)`,
+        border: 0,
+        zIndex: (theme) => theme.zIndex.modal,
+      }
+    : { position: 'relative', inset: 0, width: '100%', height: '100%', border: 0, zIndex: 'auto' };
   const drawerWidth = fullScreen
     ? '100vw'
     : tab === 'map'
@@ -144,7 +157,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
               // zIndex auto: embedded in the page flow, the paper must not
               // keep the drawer's modal-level 1200 or it buries the panel's
               // collapse/resize handles.
-              '& .MuiDrawer-paper': { position: 'relative', inset: 0, width: '100%', height: '100%', border: 0, zIndex: 'auto' },
+              '& .MuiDrawer-paper': inlinePaperSx,
             }
           : undefined
       }
@@ -198,7 +211,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
             </Box>
             <Box sx={{ flex: 1 }} />
             {obj && <RowActions target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
-            {!inline && (
+            {(!inline || tab === 'map') && (
               <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
                 <IconButton onClick={() => setFullScreen((v) => !v)} aria-label={fullScreen ? 'Restore drawer' : 'Full screen'}>
                   {fullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
