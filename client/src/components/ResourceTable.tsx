@@ -51,6 +51,8 @@ interface Props {
   hiddenFields?: string[];
   /** Stable id used to persist user-resized column widths for this table. */
   tableId?: string;
+  /** Row emphasized as the resource currently shown in an adjacent detail view. */
+  activeRowId?: string;
 }
 
 const labelFilterOptions = createFilterOptions<string>({ limit: 100 });
@@ -86,6 +88,7 @@ export function ResourceTable({
   onSelectionChange,
   hiddenFields,
   tableId,
+  activeRowId,
 }: Props) {
   const [localFilter, setLocalFilter] = useState('');
   // The committed value lives in the URL (or localFilter); the input itself is
@@ -193,7 +196,7 @@ export function ResourceTable({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={1} sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center' }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
         <SmartFilterInput
           value={inputValue}
           onChange={setTextFilter}
@@ -248,7 +251,13 @@ export function ResourceTable({
         columns={gridColumns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
+        getRowClassName={(params) => (params.id === activeRowId ? 'kubus-active-resource-row' : '')}
         density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
+        // On overlay-scrollbar platforms the grid measures the native
+        // scrollbar as 0px and floats its own on top of the last column;
+        // an explicit size (matching the themed 10px scrollbars) makes it
+        // reserve a real gutter instead.
+        scrollbarSize={10}
         checkboxSelection={checkboxSelection}
         onRowSelectionModelChange={
           onSelectionChange
@@ -285,6 +294,10 @@ export function ResourceTable({
           flex: 1,
           minHeight: 0,
           '& .MuiDataGrid-row': { cursor: onRowClick ? 'pointer' : 'default' },
+          '& .MuiDataGrid-row.kubus-active-resource-row': {
+            bgcolor: 'action.selected',
+            '&:hover': { bgcolor: 'action.selected' },
+          },
           '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
           ...copyCellGridSx,
         }}

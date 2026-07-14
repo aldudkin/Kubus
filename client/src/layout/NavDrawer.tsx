@@ -11,7 +11,6 @@ import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import Tooltip from '@mui/material/Tooltip';
 import TextField from '@mui/material/TextField';
-import Typography from '@mui/material/Typography';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
@@ -646,26 +645,42 @@ export function NavDrawer() {
             />
             <Collapse in={isOpen('Custom Resources')}>
               {customKinds.map(([groupName, kinds]) => {
-                const visible = kinds.filter((k) => matches(k.kind));
+                const groupMatches = matches(groupName);
+                const visible = groupMatches ? kinds : kinds.filter((k) => matches(k.kind));
                 if (!visible.length) return null;
+                const collapseKey = `custom:${groupName}`;
                 return (
                   <Box key={groupName}>
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ pl: ITEM_INDENT, display: 'block', mt: 0.75, opacity: 0.8 }}
-                      noWrap
+                    <ListItemButton
+                      dense
+                      aria-expanded={isOpen(collapseKey)}
+                      onClick={() => toggleGroup(collapseKey)}
+                      sx={{ pl: ITEM_INDENT, pr: 1.5, py: 0.25, mt: 0.5, color: 'text.secondary' }}
                     >
-                      {groupName}
-                    </Typography>
-                    {visible.map((k) => (
-                      <NavEntry
-                        key={`${k.group}/${k.version}/${k.plural}`}
-                        to={kindPath(k.group, k.version, k.plural)}
-                        label={k.kind}
-                        favorite={kindFavorite({ group: k.group, version: k.version, plural: k.plural, kind: k.kind, label: k.kind })}
+                      <ListItemText
+                        primary={groupName}
+                        slotProps={{ primary: { variant: 'caption', noWrap: true, title: groupName, sx: { fontWeight: 700, lineHeight: 1.4 } } }}
                       />
-                    ))}
+                      <ExpandMoreIcon
+                        sx={{
+                          ml: 0.5,
+                          fontSize: 15,
+                          opacity: 0.6,
+                          transform: isOpen(collapseKey) ? 'none' : 'rotate(-90deg)',
+                          transition: 'transform 120ms ease',
+                        }}
+                      />
+                    </ListItemButton>
+                    <Collapse in={isOpen(collapseKey)}>
+                      {visible.map((k) => (
+                        <NavEntry
+                          key={`${k.group}/${k.version}/${k.plural}`}
+                          to={kindPath(k.group, k.version, k.plural)}
+                          label={k.kind}
+                          favorite={kindFavorite({ group: k.group, version: k.version, plural: k.plural, kind: k.kind, label: k.kind })}
+                        />
+                      ))}
+                    </Collapse>
                   </Box>
                 );
               })}

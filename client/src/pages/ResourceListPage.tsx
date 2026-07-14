@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import ButtonBase from '@mui/material/ButtonBase';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Link from '@mui/material/Link';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/Add';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SubjectIcon from '@mui/icons-material/Subject';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import BookmarkAddOutlinedIcon from '@mui/icons-material/BookmarkAddOutlined';
@@ -19,8 +23,8 @@ import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
 import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
 import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup } from '../components/columns.js';
-import type { ResourceSelection } from '../components/ResourceDetailDrawer.js';
-import { useDetailStore } from '../state/detail.js';
+import { ResourceDetailPanel, type ResourceSelection } from '../components/ResourceDetailDrawer.js';
+import { clampDetailWidth, DEFAULT_DETAIL_WIDTH, useDetailStore } from '../state/detail.js';
 import { RowActionMenu, RowActions, type RowActionTarget } from '../components/RowActions.js';
 import { YamlEditor } from '../components/YamlEditor.js';
 import { EmptyState } from '../components/EmptyState.js';
@@ -29,9 +33,9 @@ import { usePaneActive } from '../layout/pane-context.js';
 import { addLabelTerm } from '../label-selector.js';
 
 /**
- * Renderless bridge between this page's URL params and the global detail
- * drawer. Pages stay mounted (and live) in hidden tab panes, so everything
- * here gates on pane activity: only the visible pane may drive the drawer or
+ * Renderless bridge between this page's URL params and the shared detail
+ * selection. Pages stay mounted (and live) in hidden tab panes, so everything
+ * here gates on pane activity: only the visible pane may drive the detail view or
  * rewrite the URL. Kept out of ResourceListPage so activation flips re-render
  * this stub instead of the whole page.
  */
@@ -49,18 +53,15 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
     setSearchParams(next, { replace: true });
   }, [paneActive, searchParams, setSearchParams]);
 
-  // Mirror the URL selection into the drawer. On activation this re-runs and
-  // enforces this tab's drawer state (open its ?sel, or close a leftover).
-  // The reverse direction — user closes the drawer, so ?sel must go — is
-  // handled explicitly by the drawer's onClose in AppShell; inferring it here
-  // from drawer-state transitions races with tab switches.
+  // Mirror the URL selection into the detail view. On activation this re-runs
+  // and enforces this tab's selection (open its ?sel, or close a leftover).
   useEffect(() => {
     if (!paneActive) return;
     if (sel) openDetail(sel);
     else closeDetail();
   }, [paneActive, sel, openDetail, closeDetail]);
 
-  // Close the drawer when the visible page unmounts (in-tab navigation or
+  // Close the detail view when the visible page unmounts (in-tab navigation or
   // closing the active tab); a hidden tab being closed leaves it alone.
   const paneActiveRef = useRef(paneActive);
   paneActiveRef.current = paneActive;
@@ -71,6 +72,161 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
     [closeDetail],
   );
   return null;
+}
+
+/**
+ * Side-by-side detail view. Unlike the global overlay drawer it never blocks
+ * the table (other rows stay clickable) and only closes explicitly — but it
+ * also only takes space while a resource is selected. The divider drags to
+ * resize, and a small pill handle on it collapses the panel without dropping
+ * the selection.
+ */
+function EmbeddedResourceDetail() {
+  const stack = useDetailStore((s) => s.stack);
+  const back = useDetailStore((s) => s.back);
+  const close = useDetailStore((s) => s.close);
+  const collapsed = useDetailStore((s) => s.collapsed);
+  const setCollapsed = useDetailStore((s) => s.setCollapsed);
+  const width = useDetailStore((s) => s.width);
+  const setWidth = useDetailStore((s) => s.setWidth);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const asideRef = useRef<HTMLElement>(null);
+
+  // Drag writes the width straight to the DOM; once the mouseup commit
+  // re-renders with the same value, drop the inline override so sx takes
+  // over again (otherwise collapse and double-click reset can't shrink it).
+  useLayoutEffect(() => {
+    if (asideRef.current) asideRef.current.style.width = '';
+  }, [width, collapsed]);
+
+  const sel = stack.at(-1);
+  if (!sel) return null;
+
+  const handleClose = () => {
+    close();
+    if (!searchParams.has('sel')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('sel');
+    setSearchParams(next, { replace: true });
+  };
+
+  // Same drag pattern as BottomDock: width goes straight to the DOM (one
+  // write per frame) and the store is committed once on mouseup.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const el = asideRef.current;
+    if (!el) return;
+    const startX = e.clientX;
+    const startWidth = useDetailStore.getState().width;
+    let pending = startWidth;
+    let frame = 0;
+    el.style.transition = 'none';
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev: MouseEvent) => {
+      pending = clampDetailWidth(startWidth + (startX - ev.clientX));
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          el.style.width = `${pending}px`;
+        });
+      }
+    };
+    const onUp = () => {
+      if (frame) cancelAnimationFrame(frame);
+      el.style.width = `${pending}px`;
+      el.style.transition = '';
+      document.body.style.cursor = '';
+      setWidth(pending);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  return (
+    <Box
+      component="aside"
+      ref={asideRef}
+      aria-label="Resource details"
+      sx={{
+        position: 'relative',
+        flexShrink: 0,
+        minHeight: 0,
+        width: collapsed ? 0 : width,
+        maxWidth: '70%',
+        transition: 'width 150ms ease',
+        bgcolor: 'background.paper',
+        borderLeft: 1,
+        borderColor: 'divider',
+      }}
+    >
+      {!collapsed && (
+        <Box
+          onMouseDown={startResize}
+          onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
+          // z 71/72 on the handles: the grid's floating scrollbars sit at
+          // z 60 (70 on hover) in the same stacking context and would
+          // otherwise swallow clicks on the halves that overhang the table.
+          sx={{
+            position: 'absolute',
+            left: -4,
+            top: 0,
+            bottom: 0,
+            width: 8,
+            cursor: 'col-resize',
+            zIndex: 71,
+            '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
+          }}
+        >
+          <Box
+            className="drag-line"
+            sx={{
+              position: 'absolute',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 3,
+              height: '100%',
+              bgcolor: 'primary.main',
+              opacity: 0,
+              transition: 'opacity 120ms ease',
+            }}
+          />
+        </Box>
+      )}
+      <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
+        <ButtonBase
+          onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
+          aria-expanded={!collapsed}
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: collapsed ? 'auto' : 0,
+            right: collapsed ? 0 : 'auto',
+            transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
+            zIndex: 72,
+            width: 20,
+            height: 52,
+            borderRadius: '10px',
+            border: 1,
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+            boxShadow: 2,
+            color: 'text.secondary',
+            '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+          }}
+        >
+          {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
+        </ButtonBase>
+      </Tooltip>
+      {/* Kept mounted through a collapse so tab/editor state survives; inert
+          drops it from tab order while it is hidden. */}
+      <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
+      </Box>
+    </Box>
+  );
 }
 
 export function ResourceListPage() {
@@ -167,6 +323,7 @@ export function ResourceListPage() {
   // API Resource view.
   const pushDetail = useDetailStore((s) => s.push);
   const openDetail = useDetailStore((s) => s.open);
+  const setDetailCollapsed = useDetailStore((s) => s.setCollapsed);
   const crdSelection: ResourceSelection | undefined =
     isCustomKind && resourceCtx && group
       ? {
@@ -221,6 +378,12 @@ export function ResourceListPage() {
   const unavailableContexts = new Set(unavailable.map(([ctx]) => ctx));
   const discoveryOnlyMissing = discoveryMissing.filter((ctx) => !unavailableContexts.has(ctx));
   const errors = Object.entries(list.status).filter(([, s]) => s.state === 'error');
+  const activeRowId = useMemo(() => {
+    if (!sel) return undefined;
+    return list.rows.find(
+      (row) => row.ctx === sel.ctx && row.obj.metadata.name === sel.name && row.obj.metadata.namespace === sel.namespace,
+    )?.obj.metadata.uid;
+  }, [list.rows, sel]);
 
   if (selected.length === 0) {
     return (
@@ -250,8 +413,9 @@ export function ResourceListPage() {
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <DetailUrlSync sel={sel} />
+      <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
           <Link
@@ -301,10 +465,12 @@ export function ResourceListPage() {
         onFilterChange={(value) => setQueryParam('q', value)}
         onLabelSelectorChange={(value) => setQueryParam('label', value)}
         onRowClick={(row) => {
-          // Open the drawer directly — going through ?sel alone would delay it
-          // by a full render + post-paint effect; the URL write below is kept
-          // for deep-linking and the mirror effect re-opens an equal selection.
+          // Update immediately so the embedded panel responds in the same
+          // render cycle; the URL remains the deep-link source of truth.
+          // Picking a row is an explicit ask for details, so also undo a
+          // collapse.
           openDetail({ ctx: row.ctx, group, version, plural, kind, name: row.obj.metadata.name, namespace: row.obj.metadata.namespace, custom: isCustomKind });
+          setDetailCollapsed(false);
           const next = new URLSearchParams(searchParams);
           next.delete('field');
           next.set('sel', `${row.ctx}|${row.obj.metadata.namespace ?? ''}|${row.obj.metadata.name}`);
@@ -317,6 +483,7 @@ export function ResourceListPage() {
         checkboxSelection={kind === 'Pod'}
         onSelectionChange={kind === 'Pod' ? setSelectedRows : undefined}
         hiddenFields={hiddenFields}
+        activeRowId={activeRowId}
         toolbar={
           <>
             <Button startIcon={<BookmarkAddOutlinedIcon />} variant="outlined" onClick={saveCurrentView}>
@@ -395,6 +562,8 @@ export function ResourceListPage() {
           />
         </DialogContent>
       </Dialog>
+      </Box>
+      <EmbeddedResourceDetail />
     </Box>
   );
 }
