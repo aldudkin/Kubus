@@ -86,6 +86,7 @@ export function ResourceListPage() {
   );
   const builtinKind = useMemo(() => gvkForResource(group, version, plural), [group, version, plural]);
   const kind = kindInfo?.kind ?? builtinKind?.kind ?? plural;
+  const behaviorKind = builtinKind?.kind === kind ? kind : undefined;
   const resourceTitle = pluralLabel(kind);
   const namespaced = kindInfo?.namespaced ?? true;
   const isCustomKind = !!kindInfo?.custom;
@@ -95,11 +96,11 @@ export function ResourceListPage() {
   const labelSelector = searchParams.get('label') ?? '';
 
   const list = useFilteredList(group, version, plural, namespaced, { labelSelector });
-  const isPodOrNode = kind === 'Pod' || kind === 'Node';
-  const { data: podMetrics } = useResourceMetrics(isPodOrNode ? selected : [], kind === 'Node' ? 'nodes' : 'pods');
+  const isPodOrNode = behaviorKind === 'Pod' || behaviorKind === 'Node';
+  const { data: podMetrics } = useResourceMetrics(isPodOrNode ? selected : [], behaviorKind === 'Node' ? 'nodes' : 'pods');
   const metricsUnavailable = isPodOrNode ? selected.filter((ctx) => podMetrics?.get(ctx)?.available === false) : [];
-  const nodePods = useWatchedList(kind === 'Node' ? selected : [], '', 'v1', 'pods');
-  const nodeAllocation = useMemo(() => (kind === 'Node' ? makeNodeAllocationLookup(nodePods.rows) : undefined), [kind, nodePods.rows]);
+  const nodePods = useWatchedList(behaviorKind === 'Node' ? selected : [], '', 'v1', 'pods');
+  const nodeAllocation = useMemo(() => (behaviorKind === 'Node' ? makeNodeAllocationLookup(nodePods.rows) : undefined), [behaviorKind, nodePods.rows]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedRows, setSelectedRows] = useState<ClusterRow[]>([]);
@@ -175,10 +176,10 @@ export function ResourceListPage() {
     [group, version, plural, kind],
   );
 
-  const metricsLookup = useMemo(() => makeMetricsLookup(kind, podMetrics), [kind, podMetrics]);
+  const metricsLookup = useMemo(() => makeMetricsLookup(behaviorKind ?? 'Resource', podMetrics), [behaviorKind, podMetrics]);
 
   const columns = useMemo(() => {
-    const ids = columnsForKind(kind, namespaced);
+    const ids = columnsForKind(behaviorKind ?? 'Resource', namespaced);
     const opts = { multiCluster: selected.length > 1, metrics: metricsLookup, nodeAllocation, onLabelClick: addLabelFilter };
     const cols = buildColumns(ids, opts);
     if (isCustomKind && printerCols?.length) {
@@ -197,7 +198,7 @@ export function ResourceListPage() {
       renderCell: (p) => <RowActions target={rowActionTarget(p.row)} />,
     });
     return cols;
-  }, [kind, namespaced, selected.length, metricsLookup, nodeAllocation, isCustomKind, printerCols, rowActionTarget, addLabelFilter]);
+  }, [behaviorKind, namespaced, selected.length, metricsLookup, nodeAllocation, isCustomKind, printerCols, rowActionTarget, addLabelFilter]);
   const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
 
   const supportsGvr = (r: ResourceKindInfo) => r.group === group && r.version === version && r.plural === plural;
@@ -286,7 +287,7 @@ export function ResourceListPage() {
         rows={list.rows}
         columns={columns}
         loading={Object.values(list.status).some((s) => s.state === 'loading')}
-        kind={kind}
+        kind={behaviorKind ?? 'Resource'}
         metricsLookup={metricsLookup}
         filter={textFilter}
         labelSelector={labelSelector}
