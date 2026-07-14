@@ -12,7 +12,7 @@ import SubjectIcon from '@mui/icons-material/Subject';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import BookmarkAddOutlinedIcon from '@mui/icons-material/BookmarkAddOutlined';
 import { useParams, useSearchParams } from 'react-router';
-import { columnsForKind, groupFromPath, groupToPath, gvkForResource, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
+import { columnsForKind, groupFromPath, groupToPath, gvkForResource, gvkLabel, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
 import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, useWatchedList, type ClusterRow } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
@@ -88,6 +88,7 @@ export function ResourceListPage() {
   const kind = kindInfo?.kind ?? builtinKind?.kind ?? plural;
   const behaviorKind = builtinKind?.kind === kind ? kind : undefined;
   const resourceTitle = pluralLabel(kind);
+  const resourceGvk = gvkLabel({ group, version, kind });
   const namespaced = kindInfo?.namespaced ?? true;
   const isCustomKind = !!kindInfo?.custom;
 
@@ -245,7 +246,7 @@ export function ResourceListPage() {
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <DetailUrlSync sel={sel} />
       <Box sx={{ px: 1.5, pt: 1.5 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
           {crdSelection ? (
             <Link
               component="button"
@@ -260,6 +261,9 @@ export function ResourceListPage() {
           ) : (
             <Typography variant="h6">{resourceTitle}</Typography>
           )}
+          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+            {resourceGvk}
+          </Typography>
         </Box>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>

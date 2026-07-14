@@ -28,7 +28,7 @@ import ExtensionOutlinedIcon from '@mui/icons-material/ExtensionOutlined';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { NavLink, useLocation, useNavigate } from 'react-router';
-import { BUILTIN_NAV_GROUPS, groupToPath, pluralLabel, type FavoriteItem, type ResourceKindInfo, type SavedView } from '@kubus/shared';
+import { BUILTIN_NAV_GROUPS, groupToPath, gvkForResource, gvkLabel, pluralLabel, type FavoriteItem, type ResourceKindInfo, type SavedView } from '@kubus/shared';
 import { useApiResourcesForContexts } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
@@ -73,9 +73,19 @@ function kindFavorite(k: NavKind): FavoriteItem {
   return {
     id: `kind:${k.group}/${k.version}/${k.plural}`,
     title: k.label,
-    subtitle: `${k.group || 'core'}/${k.version}`,
+    subtitle: gvkLabel(k),
     path: kindPath(k.group, k.version, k.plural),
   };
+}
+
+/** Resolve old persisted kind favorites to a full GVK once discovery is available. */
+function favoriteGvk(favorite: FavoriteItem, resources: ResourceKindInfo[]): string | undefined {
+  if (!favorite.id.startsWith('kind:')) return favorite.subtitle;
+  const [group, version, plural] = favorite.id.slice('kind:'.length).split('/');
+  if (group === undefined || !version || !plural) return favorite.subtitle;
+  const discovered = resources.find((r) => r.group === group && r.version === version && r.plural === plural);
+  const resource = discovered ?? gvkForResource(group, version, plural);
+  return resource ? gvkLabel(resource) : favorite.subtitle;
 }
 
 // Star toggle revealed on row hover (always visible once active). Rendered as a
@@ -139,12 +149,14 @@ function dedupeCustomNavKinds(kinds: ResourceKindInfo[]): ResourceKindInfo[] {
 function NavEntry({
   to,
   label,
+  subtitle,
   icon,
   favorite,
   favoriteAction,
 }: {
   to: string;
   label: string;
+  subtitle?: string;
   icon?: React.ReactElement;
   favorite?: FavoriteItem;
   favoriteAction?: ReactNode;
@@ -162,12 +174,20 @@ function NavEntry({
       dense
       selected={active}
       {...newTabHandlers}
-      sx={{ pl: icon ? 1.5 : ITEM_INDENT, py: 0.375, pr: favorite ? (favoriteAction ? 7 : 4) : undefined }}
+      sx={{ pl: icon ? 1.5 : ITEM_INDENT, py: subtitle ? 0.25 : 0.375, pr: favorite ? (favoriteAction ? 7 : 4) : undefined }}
     >
       {icon && (
         <ListItemIcon sx={{ minWidth: 26, color: 'text.secondary', '& svg': { fontSize: 17 } }}>{icon}</ListItemIcon>
       )}
-      <ListItemText primary={label} slotProps={{ primary: { variant: 'body2', noWrap: true } }} />
+      <ListItemText
+        primary={label}
+        secondary={subtitle}
+        sx={{ my: subtitle ? 0.25 : undefined }}
+        slotProps={{
+          primary: { variant: 'body2', noWrap: true, sx: subtitle ? { lineHeight: 1.25 } : undefined },
+          secondary: { noWrap: true, title: subtitle, sx: { fontSize: 10.5, fontStyle: 'italic', lineHeight: 1.1 } },
+        }}
+      />
     </ListItemButton>
   );
   if (!favorite) return button;
@@ -560,10 +580,20 @@ export function NavDrawer() {
                     </Box>
                   );
                 }
-                if (!matches(fav.title)) return null;
+                const subtitle = favoriteGvk(fav, apiResources?.resources ?? []);
+                if (!matches(fav.title) && !(subtitle && matches(subtitle))) return null;
                 return (
                   <Box key={fav.id}>
-                    {favoriteDragShell(fav, <NavEntry to={fav.path ?? '/'} label={fav.title} favorite={fav} favoriteAction={favoriteDragHandle(fav)} />)}
+                    {favoriteDragShell(
+                      fav,
+                      <NavEntry
+                        to={fav.path ?? '/'}
+                        label={fav.title}
+                        subtitle={subtitle}
+                        favorite={fav}
+                        favoriteAction={favoriteDragHandle(fav)}
+                      />,
+                    )}
                   </Box>
                 );
               })}
