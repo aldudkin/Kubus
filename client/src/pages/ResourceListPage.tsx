@@ -252,7 +252,7 @@ export function ResourceListPage() {
               component="button"
               variant="h6"
               underline="hover"
-              color="inherit"
+              color="primary"
               title={`Open CRD ${crdSelection.name}`}
               onClick={() => pushDetail(crdSelection)}
             >
