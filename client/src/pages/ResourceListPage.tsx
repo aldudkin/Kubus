@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Activity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -82,8 +82,8 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
  * the selection.
  */
 function EmbeddedResourceDetail() {
-  // The detail stack is global and pages stay live in hidden panes — only the
-  // visible pane may render the (expensive) embedded panel.
+  // Keep the detail stack mounted so editor state survives tab switches, but
+  // pause its effects and hidden rendering work with an Activity boundary.
   const paneActive = usePaneActive();
   const stack = useDetailStore((s) => s.stack);
   const back = useDetailStore((s) => s.back);
@@ -103,7 +103,7 @@ function EmbeddedResourceDetail() {
   }, [width, collapsed]);
 
   const sel = stack.at(-1);
-  if (!sel || !paneActive) return null;
+  if (!sel) return null;
 
   const handleClose = () => {
     close();
@@ -148,87 +148,89 @@ function EmbeddedResourceDetail() {
   };
 
   return (
-    <Box
-      component="aside"
-      ref={asideRef}
-      aria-label="Resource details"
-      sx={{
-        position: 'relative',
-        flexShrink: 0,
-        minHeight: 0,
-        width: collapsed ? 0 : width,
-        maxWidth: '70%',
-        transition: 'width 150ms ease',
-        bgcolor: 'background.paper',
-        borderLeft: 1,
-        borderColor: 'divider',
-      }}
-    >
-      {!collapsed && (
-        <Box
-          onMouseDown={startResize}
-          onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
-          // z 71/72 on the handles: the grid's floating scrollbars sit at
-          // z 60 (70 on hover) in the same stacking context and would
-          // otherwise swallow clicks on the halves that overhang the table.
-          sx={{
-            position: 'absolute',
-            left: -4,
-            top: 0,
-            bottom: 0,
-            width: 8,
-            cursor: 'col-resize',
-            zIndex: 71,
-            '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
-          }}
-        >
+    <Activity mode={paneActive ? 'visible' : 'hidden'}>
+      <Box
+        component="aside"
+        ref={asideRef}
+        aria-label="Resource details"
+        sx={{
+          position: 'relative',
+          flexShrink: 0,
+          minHeight: 0,
+          width: collapsed ? 0 : width,
+          maxWidth: '70%',
+          transition: 'width 150ms ease',
+          bgcolor: 'background.paper',
+          borderLeft: 1,
+          borderColor: 'divider',
+        }}
+      >
+        {!collapsed && (
           <Box
-            className="drag-line"
+            onMouseDown={startResize}
+            onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
+            // z 71/72 on the handles: the grid's floating scrollbars sit at
+            // z 60 (70 on hover) in the same stacking context and would
+            // otherwise swallow clicks on the halves that overhang the table.
             sx={{
               position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              width: 3,
-              height: '100%',
-              bgcolor: 'primary.main',
-              opacity: 0,
-              transition: 'opacity 120ms ease',
+              left: -4,
+              top: 0,
+              bottom: 0,
+              width: 8,
+              cursor: 'col-resize',
+              zIndex: 71,
+              '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
             }}
-          />
+          >
+            <Box
+              className="drag-line"
+              sx={{
+                position: 'absolute',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 3,
+                height: '100%',
+                bgcolor: 'primary.main',
+                opacity: 0,
+                transition: 'opacity 120ms ease',
+              }}
+            />
+          </Box>
+        )}
+        <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
+          <ButtonBase
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
+            aria-expanded={!collapsed}
+            sx={{
+              position: 'absolute',
+              top: '50%',
+              left: collapsed ? 'auto' : 0,
+              right: collapsed ? 0 : 'auto',
+              transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
+              zIndex: 72,
+              width: 20,
+              height: 52,
+              borderRadius: '10px',
+              border: 1,
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+              boxShadow: 2,
+              color: 'text.secondary',
+              '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+            }}
+          >
+            {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
+          </ButtonBase>
+        </Tooltip>
+        {/* Kept mounted through a collapse so tab/editor state survives; inert
+            drops it from tab order while it is hidden. */}
+        <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
         </Box>
-      )}
-      <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
-        <ButtonBase
-          onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
-          aria-expanded={!collapsed}
-          sx={{
-            position: 'absolute',
-            top: '50%',
-            left: collapsed ? 'auto' : 0,
-            right: collapsed ? 0 : 'auto',
-            transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
-            zIndex: 72,
-            width: 20,
-            height: 52,
-            borderRadius: '10px',
-            border: 1,
-            borderColor: 'divider',
-            bgcolor: 'background.paper',
-            boxShadow: 2,
-            color: 'text.secondary',
-            '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
-          }}
-        >
-          {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
-        </ButtonBase>
-      </Tooltip>
-      {/* Kept mounted through a collapse so tab/editor state survives; inert
-          drops it from tab order while it is hidden. */}
-      <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
       </Box>
-    </Box>
+    </Activity>
   );
 }
 
