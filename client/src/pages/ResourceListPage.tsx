@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Activity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -22,7 +22,7 @@ import { useClustersStore } from '../state/clusters.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
 import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
-import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup } from '../components/columns.js';
+import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup, METRIC_COLUMN_IDS } from '../components/columns.js';
 import { ResourceDetailPanel, type ResourceSelection } from '../components/ResourceDetailDrawer.js';
 import { clampDetailWidth, DEFAULT_DETAIL_WIDTH, useDetailStore } from '../state/detail.js';
 import { RowActionMenu, RowActions, type RowActionTarget } from '../components/RowActions.js';
@@ -82,6 +82,9 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
  * the selection.
  */
 function EmbeddedResourceDetail() {
+  // Keep the detail stack mounted so editor state survives tab switches, but
+  // pause its effects and hidden rendering work with an Activity boundary.
+  const paneActive = usePaneActive();
   const stack = useDetailStore((s) => s.stack);
   const back = useDetailStore((s) => s.back);
   const close = useDetailStore((s) => s.close);
@@ -145,87 +148,89 @@ function EmbeddedResourceDetail() {
   };
 
   return (
-    <Box
-      component="aside"
-      ref={asideRef}
-      aria-label="Resource details"
-      sx={{
-        position: 'relative',
-        flexShrink: 0,
-        minHeight: 0,
-        width: collapsed ? 0 : width,
-        maxWidth: '70%',
-        transition: 'width 150ms ease',
-        bgcolor: 'background.paper',
-        borderLeft: 1,
-        borderColor: 'divider',
-      }}
-    >
-      {!collapsed && (
-        <Box
-          onMouseDown={startResize}
-          onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
-          // z 71/72 on the handles: the grid's floating scrollbars sit at
-          // z 60 (70 on hover) in the same stacking context and would
-          // otherwise swallow clicks on the halves that overhang the table.
-          sx={{
-            position: 'absolute',
-            left: -4,
-            top: 0,
-            bottom: 0,
-            width: 8,
-            cursor: 'col-resize',
-            zIndex: 71,
-            '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
-          }}
-        >
+    <Activity mode={paneActive ? 'visible' : 'hidden'}>
+      <Box
+        component="aside"
+        ref={asideRef}
+        aria-label="Resource details"
+        sx={{
+          position: 'relative',
+          flexShrink: 0,
+          minHeight: 0,
+          width: collapsed ? 0 : width,
+          maxWidth: '70%',
+          transition: 'width 150ms ease',
+          bgcolor: 'background.paper',
+          borderLeft: 1,
+          borderColor: 'divider',
+        }}
+      >
+        {!collapsed && (
           <Box
-            className="drag-line"
+            onMouseDown={startResize}
+            onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
+            // z 71/72 on the handles: the grid's floating scrollbars sit at
+            // z 60 (70 on hover) in the same stacking context and would
+            // otherwise swallow clicks on the halves that overhang the table.
             sx={{
               position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              width: 3,
-              height: '100%',
-              bgcolor: 'primary.main',
-              opacity: 0,
-              transition: 'opacity 120ms ease',
+              left: -4,
+              top: 0,
+              bottom: 0,
+              width: 8,
+              cursor: 'col-resize',
+              zIndex: 71,
+              '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
             }}
-          />
+          >
+            <Box
+              className="drag-line"
+              sx={{
+                position: 'absolute',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 3,
+                height: '100%',
+                bgcolor: 'primary.main',
+                opacity: 0,
+                transition: 'opacity 120ms ease',
+              }}
+            />
+          </Box>
+        )}
+        <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
+          <ButtonBase
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
+            aria-expanded={!collapsed}
+            sx={{
+              position: 'absolute',
+              top: '50%',
+              left: collapsed ? 'auto' : 0,
+              right: collapsed ? 0 : 'auto',
+              transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
+              zIndex: 72,
+              width: 20,
+              height: 52,
+              borderRadius: '10px',
+              border: 1,
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+              boxShadow: 2,
+              color: 'text.secondary',
+              '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+            }}
+          >
+            {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
+          </ButtonBase>
+        </Tooltip>
+        {/* Kept mounted through a collapse so tab/editor state survives; inert
+            drops it from tab order while it is hidden. */}
+        <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
         </Box>
-      )}
-      <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
-        <ButtonBase
-          onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
-          aria-expanded={!collapsed}
-          sx={{
-            position: 'absolute',
-            top: '50%',
-            left: collapsed ? 'auto' : 0,
-            right: collapsed ? 0 : 'auto',
-            transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
-            zIndex: 72,
-            width: 20,
-            height: 52,
-            borderRadius: '10px',
-            border: 1,
-            borderColor: 'divider',
-            bgcolor: 'background.paper',
-            boxShadow: 2,
-            color: 'text.secondary',
-            '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
-          }}
-        >
-          {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
-        </ButtonBase>
-      </Tooltip>
-      {/* Kept mounted through a collapse so tab/editor state survives; inert
-          drops it from tab order while it is hidden. */}
-      <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
       </Box>
-    </Box>
+    </Activity>
   );
 }
 
@@ -343,9 +348,14 @@ export function ResourceListPage() {
 
   const metricsLookup = useMemo(() => makeMetricsLookup(behaviorKind ?? 'Resource', podMetrics), [behaviorKind, podMetrics]);
 
-  const columns = useMemo(() => {
-    const ids = columnsForKind(behaviorKind ?? 'Resource', namespaced);
-    const opts = { multiCluster: selected.length > 1, metrics: metricsLookup, nodeAllocation, onLabelClick: addLabelFilter };
+  const columnIds = useMemo(() => columnsForKind(behaviorKind ?? 'Resource', namespaced), [behaviorKind, namespaced]);
+
+  // Static columns are built without the metrics/allocation lookups so the
+  // 20 s metrics poll (or, on Node lists, any pod churn) doesn't hand the
+  // grid a full set of fresh defs — that re-renders every visible cell.
+  const staticColumns = useMemo(() => {
+    const ids = columnIds.filter((id) => !METRIC_COLUMN_IDS.has(id));
+    const opts = { multiCluster: selected.length > 1, onLabelClick: addLabelFilter };
     const cols = buildColumns(ids, opts);
     if (isCustomKind && printerCols?.length) {
       const crdIdx = cols.findIndex((c) => c.field === 'age');
@@ -363,7 +373,35 @@ export function ResourceListPage() {
       renderCell: (p) => <RowActions target={rowActionTarget(p.row)} />,
     });
     return cols;
-  }, [behaviorKind, namespaced, selected.length, metricsLookup, nodeAllocation, isCustomKind, printerCols, rowActionTarget, addLabelFilter]);
+  }, [columnIds, selected.length, addLabelFilter, isCustomKind, printerCols, rowActionTarget]);
+
+  const metricColumns = useMemo(() => {
+    const ids = columnIds.filter((id) => METRIC_COLUMN_IDS.has(id));
+    if (!ids.length) return [];
+    return buildColumns(ids, { multiCluster: false, metrics: metricsLookup, nodeAllocation });
+  }, [columnIds, metricsLookup, nodeAllocation]);
+
+  const columns = useMemo(() => {
+    if (!metricColumns.length) return staticColumns;
+    const merged = [...staticColumns];
+    for (const col of metricColumns) {
+      // Insert before the first following non-metric column present in the
+      // merged list, falling back to just before the actions column.
+      const at = columnIds.indexOf(col.field);
+      let insertAt = merged.length - 1;
+      for (let i = at + 1; i < columnIds.length; i++) {
+        const id = columnIds[i]!;
+        if (METRIC_COLUMN_IDS.has(id)) continue;
+        const idx = merged.findIndex((c) => c.field === id);
+        if (idx !== -1) {
+          insertAt = idx;
+          break;
+        }
+      }
+      merged.splice(insertAt, 0, col);
+    }
+    return merged;
+  }, [staticColumns, metricColumns, columnIds]);
   const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
 
   const discoveryMissing = useMemo(() => {

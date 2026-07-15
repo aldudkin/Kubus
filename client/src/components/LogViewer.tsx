@@ -139,7 +139,12 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewHeight, setViewHeight] = useState(400);
 
-  const { wrap, tsMode, highlight, setWrap, cycleTsMode, setHighlight } = useLogPrefsStore();
+  const wrap = useLogPrefsStore((s) => s.wrap);
+  const tsMode = useLogPrefsStore((s) => s.tsMode);
+  const highlight = useLogPrefsStore((s) => s.highlight);
+  const setWrap = useLogPrefsStore((s) => s.setWrap);
+  const cycleTsMode = useLogPrefsStore((s) => s.cycleTsMode);
+  const setHighlight = useLogPrefsStore((s) => s.setHighlight);
   const monoFontSize = useUiPrefsStore((s) => s.monoFontSize);
   const defaultTailLines = useUiPrefsStore((s) => s.defaultTailLines);
   const rowHeight = rowHeightFor(monoFontSize);
@@ -202,14 +207,19 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, timeMode]);
 
-  const levelCounts = useMemo(() => {
+  // Status-bar stats may lag slightly: one O(n) pass over the deferred buffer keeps flushes cheap.
+  const deferredLines = useDeferredValue(lines);
+  const { levelCounts, recentRate } = useMemo(() => {
     const counts: Record<LogLevel, number> = { error: 0, warn: 0, info: 0, debug: 0, trace: 0 };
-    for (const l of lines) {
+    const cutoff = Date.now() - 10_000;
+    let recent = 0;
+    for (const l of deferredLines) {
       const level = levelOf(l);
       if (level) counts[level] += 1;
+      if (l.receivedAt >= cutoff) recent++;
     }
-    return counts;
-  }, [lines]);
+    return { levelCounts: counts, recentRate: recent / 10 };
+  }, [deferredLines]);
 
   const toggleLevel = (level: LogLevel) => {
     setLevelFilter((prev) => {
@@ -310,15 +320,6 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
     const text = visible.map((l) => `${l.ts ?? ''} [${l.pod}/${l.container}] ${strippedOf(l)}`).join('\n');
     await copyToClipboard(text);
   };
-
-  const recentRate = useMemo(() => {
-    const cutoff = Date.now() - 10_000;
-    let count = 0;
-    for (const l of lines) {
-      if (l.receivedAt >= cutoff) count++;
-    }
-    return count / 10;
-  }, [lines]);
 
   // Simple windowed rendering (nowrap) — only rows near the viewport mount.
   const start = wrap ? 0 : Math.max(0, Math.floor(scrollTop / rowHeight) - 20);
@@ -445,30 +446,42 @@ export function LogViewer({ tab }: { tab: LogsTab }) {
           </IconButton>
         </Tooltip>
       </Box>
-      <Box
-        ref={scrollRef}
-        onScroll={onScroll}
-        sx={{ flex: 1, overflow: 'auto', fontFamily: '"JetBrains Mono", monospace', fontSize: monoFontSize, bgcolor: '#151518', color: '#d4d4da' }}
-      >
-        <Box sx={wrap ? undefined : { height: visible.length * rowHeight, position: 'relative' }}>
-          {visible.slice(start, end).map((l, i) => {
-            const idx = start + i;
-            return (
-              <LineRow
-                key={idx}
-                line={l}
-                idx={idx}
-                wrap={wrap}
-                showPod={showPod}
-                podColor={showPod ? (podColor.get(l.pod) ?? '#888') : undefined}
-                tsMode={tsMode}
-                highlight={highlight}
-                find={find}
-                isCurrent={idx === currentMatch}
-                rowHeight={rowHeight}
-              />
-            );
-          })}
+      <Box sx={{ flex: 1, minHeight: 0, p: 1, pt: 0.75 }}>
+        <Box
+          ref={scrollRef}
+          onScroll={onScroll}
+          sx={{
+            height: '100%',
+            overflow: 'auto',
+            fontFamily: '"JetBrains Mono", monospace',
+            fontSize: monoFontSize,
+            bgcolor: '#151518',
+            color: '#d4d4da',
+            border: 1,
+            borderColor: (theme) => (theme.palette.mode === 'dark' ? 'transparent' : theme.palette.divider),
+            borderRadius: 1,
+          }}
+        >
+          <Box sx={wrap ? undefined : { height: visible.length * rowHeight, position: 'relative' }}>
+            {visible.slice(start, end).map((l, i) => {
+              const idx = start + i;
+              return (
+                <LineRow
+                  key={idx}
+                  line={l}
+                  idx={idx}
+                  wrap={wrap}
+                  showPod={showPod}
+                  podColor={showPod ? (podColor.get(l.pod) ?? '#888') : undefined}
+                  tsMode={tsMode}
+                  highlight={highlight}
+                  find={find}
+                  isCurrent={idx === currentMatch}
+                  rowHeight={rowHeight}
+                />
+              );
+            })}
+          </Box>
         </Box>
       </Box>
     </Box>
