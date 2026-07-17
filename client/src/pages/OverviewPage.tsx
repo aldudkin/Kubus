@@ -6,6 +6,7 @@ import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Grid from '@mui/material/Grid';
 import LinearProgress from '@mui/material/LinearProgress';
+import Skeleton from '@mui/material/Skeleton';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -20,7 +21,6 @@ import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
 import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import ErrorOutlinedIcon from '@mui/icons-material/ErrorOutlined';
 import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import ExtensionOutlinedIcon from '@mui/icons-material/ExtensionOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router';
 import { useNodeMetrics, useOverview } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { AgeCell } from '../components/AgeCell.js';
+import { ClusterSectionHeader } from '../components/ClusterSectionHeader.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { InstallMetricsServerButton } from '../components/MetricsServerControls.js';
 import { StatusChip } from '../components/StatusChip.js';
@@ -70,11 +71,8 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} sx={{ mb: 1.5, alignItems: 'center' }}>
-        <HubOutlinedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
-        <Typography variant="h6">{ctx}</Typography>
-      </Stack>
-      {isLoading && <LinearProgress />}
+      <ClusterSectionHeader ctx={ctx} />
+      {isLoading && <OverviewSkeleton />}
       {error && <Alert severity="error">{error.message}</Alert>}
       {data && (
         <>
@@ -227,6 +225,22 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
         </>
       )}
     </Box>
+  );
+}
+
+/** Content-shaped placeholders matching the stat-card grid and node-usage card. */
+function OverviewSkeleton() {
+  return (
+    <>
+      <Grid container spacing={1.5} sx={{ mb: 2 }}>
+        {Array.from({ length: 8 }, (_, i) => (
+          <Grid key={i} size={{ xs: 6, sm: 4, md: 2 }}>
+            <Skeleton variant="rounded" height={62} />
+          </Grid>
+        ))}
+      </Grid>
+      <Skeleton variant="rounded" height={120} />
+    </>
   );
 }
 

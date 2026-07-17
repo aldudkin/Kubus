@@ -5,6 +5,8 @@ import { buildTheme } from './theme.js';
 import { setTitleBarMode } from './titlebar-overlay.js';
 import { useClustersStore } from './state/clusters.js';
 import { AppRouter } from './router.js';
+import { ErrorBoundary } from './components/ErrorBoundary.js';
+import { ToastHost } from './components/ToastHost.js';
 import { UpdateNotification } from './components/UpdateNotification.js';
 import { TitleBarAwareBackdrop } from './components/TitleBarAwareBackdrop.js';
 
@@ -29,7 +31,10 @@ export default function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <AppRouter />
+      <ErrorBoundary label="Kubus">
+        <AppRouter />
+      </ErrorBoundary>
+      <ToastHost />
       <UpdateNotification />
     </ThemeProvider>
   );

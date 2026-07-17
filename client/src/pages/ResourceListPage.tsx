@@ -13,7 +13,6 @@ import AddIcon from '@mui/icons-material/Add';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SubjectIcon from '@mui/icons-material/Subject';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import BookmarkAddOutlinedIcon from '@mui/icons-material/BookmarkAddOutlined';
 import { useParams, useSearchParams } from 'react-router';
 import { columnsForKind, groupFromPath, groupToPath, gvkForResource, gvkLabel, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
@@ -27,7 +26,7 @@ import { ResourceDetailPanel, type ResourceSelection } from '../components/Resou
 import { clampDetailWidth, DEFAULT_DETAIL_WIDTH, useDetailStore } from '../state/detail.js';
 import { isLogTargetKind, RowActionMenu, RowActions, RowLogsButton, type RowActionTarget } from '../components/RowActions.js';
 import { YamlEditor } from '../components/YamlEditor.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { usePaneActive } from '../layout/pane-context.js';
 import { addLabelTerm } from '../label-selector.js';
@@ -438,13 +437,7 @@ export function ResourceListPage() {
   }, [list.rows, sel]);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState
-        icon={<HubOutlinedIcon />}
-        title="No cluster selected"
-        subtitle="Pick one or more clusters from the switcher in the top bar."
-      />
-    );
+    return <NoClustersState />;
   }
 
   const multiLogs = kind === 'Pod' && selectedRows.length > 0;

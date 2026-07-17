@@ -2,7 +2,6 @@ import { useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
-import Snackbar from '@mui/material/Snackbar';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -13,6 +12,7 @@ import UndoIcon from '@mui/icons-material/Undo';
 import type { KubeObject } from '@kubus/shared';
 import { useRolloutHistory, useRolloutUndo } from '../../api/queries.js';
 import { useIsProtected } from '../../state/clusters.js';
+import { showToast } from '../../state/toast.js';
 import { AgeCell } from '../AgeCell.js';
 import { ConfirmDialog } from '../ConfirmDialog.js';
 
@@ -23,7 +23,6 @@ export function RolloutHistory({ ctx, kind, obj }: { ctx: string; kind: 'Deploym
   const undo = useRolloutUndo();
   const isProtected = useIsProtected(ctx);
   const [confirmRevision, setConfirmRevision] = useState<number | null>(null);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const paused = !!(obj.spec as { paused?: boolean })?.paused;
 
   if (error) return <Alert severity="error" sx={{ m: 2 }}>{error.message}</Alert>;
@@ -96,21 +95,16 @@ export function RolloutHistory({ ctx, kind, obj }: { ctx: string; kind: 'Deploym
             {
               onSuccess: () => {
                 setConfirmRevision(null);
-                setToast({ severity: 'success', text: `Rolled back ${name} to revision ${confirmRevision}` });
+                showToast('success', `Rolled back ${name} to revision ${confirmRevision}`);
               },
               onError: (e) => {
                 setConfirmRevision(null);
-                setToast({ severity: 'error', text: e instanceof Error ? e.message : String(e) });
+                showToast('error', e instanceof Error ? e.message : String(e));
               },
             },
           )
         }
       />
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </>
   );
 }

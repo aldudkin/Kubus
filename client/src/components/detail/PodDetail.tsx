@@ -1,12 +1,10 @@
 import { useMemo, useState } from 'react';
-import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Link from '@mui/material/Link';
-import Snackbar from '@mui/material/Snackbar';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import Table from '@mui/material/Table';
@@ -28,6 +26,7 @@ import { AgeCell } from '../AgeCell.js';
 import { containerResources, podDebugContainers, podSummary } from '../../kube-display.js';
 import { usePodEnv, useResourceMetrics, useStopDebug } from '../../api/queries.js';
 import { useDetailStore } from '../../state/detail.js';
+import { showToast } from '../../state/toast.js';
 import { useDockStore, dockTabId } from '../../state/dock.js';
 
 interface ContainerSpec {
@@ -163,7 +162,6 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
   const debugContainers = podDebugContainers(obj);
   const stop = useStopDebug();
   const addTab = useDockStore((s) => s.addTab);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   if (!debugContainers.length) return null;
   const namespace = obj.metadata.namespace ?? '';
   const pod = obj.metadata.name;
@@ -216,8 +214,8 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
                         stop.mutate(
                           { ctx, body: { namespace, pod, container: c.name } },
                           {
-                            onSuccess: () => setToast({ severity: 'success', text: `Stopping ${c.name} — it exits within a second` }),
-                            onError: (e) => setToast({ severity: 'error', text: e instanceof Error ? e.message : String(e) }),
+                            onSuccess: () => showToast('success', `Stopping ${c.name} — it exits within a second`),
+                            onError: (e) => showToast('error', e instanceof Error ? e.message : String(e)),
                           },
                         )
                       }
@@ -231,11 +229,6 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
           ))}
         </TableBody>
       </Table>
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </Section>
   );
 }

@@ -5,13 +5,13 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import DialogTitle from '@mui/material/DialogTitle';
-import Snackbar from '@mui/material/Snackbar';
 import Typography from '@mui/material/Typography';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import type { NetworkAgentStatus } from '@kubus/shared';
 import { useInstallNetworkAgent, useUninstallNetworkAgent } from '../api/queries.js';
 import { useIsProtected } from '../state/clusters.js';
+import { showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
@@ -21,7 +21,6 @@ import { ConfirmDialog } from './ConfirmDialog.js';
  */
 export function InstallNetworkAgentButton({ ctx, size = 'small' }: { ctx: string; size?: 'small' | 'medium' }) {
   const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState<string>();
   const install = useInstallNetworkAgent();
   const isProtected = useIsProtected(ctx);
 
@@ -59,11 +58,11 @@ export function InstallNetworkAgentButton({ ctx, size = 'small' }: { ctx: string
                 {
                   onSuccess: (r) => {
                     setOpen(false);
-                    setToast(`Network agent installed (${r.applied.length} resources applied) — waiting for first samples…`);
+                    showToast('success', `Network agent installed (${r.applied.length} resources applied) — waiting for first samples…`);
                   },
                   onError: (e) => {
                     setOpen(false);
-                    setToast(`Install failed: ${e.message}`);
+                    showToast('error', `Install failed: ${e.message}`);
                   },
                 },
               )
@@ -73,14 +72,12 @@ export function InstallNetworkAgentButton({ ctx, size = 'small' }: { ctx: string
           </Button>
         </DialogActions>
       </Dialog>
-      <Snackbar open={!!toast} autoHideDuration={6000} onClose={() => setToast(undefined)} message={toast} />
     </>
   );
 }
 
 export function UninstallNetworkAgentButton({ ctx, status }: { ctx: string; status?: NetworkAgentStatus }) {
   const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState<string>();
   const uninstall = useUninstallNetworkAgent();
   const isProtected = useIsProtected(ctx);
 
@@ -116,17 +113,16 @@ export function UninstallNetworkAgentButton({ ctx, status }: { ctx: string; stat
             {
               onSuccess: (r) => {
                 setOpen(false);
-                setToast(`Network agent uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
+                showToast('success', `Network agent uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
               },
               onError: (e) => {
                 setOpen(false);
-                setToast(`Uninstall failed: ${e.message}`);
+                showToast('error', `Uninstall failed: ${e.message}`);
               },
             },
           )
         }
       />
-      <Snackbar open={!!toast} autoHideDuration={6000} onClose={() => setToast(undefined)} message={toast} />
     </>
   );
 }

@@ -14,19 +14,8 @@ import { SmartFilterInput } from './SmartFilterInput.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from './CellCopy.js';
 import type { MetricsLookup } from './columns.js';
 import { useUiPrefsStore } from '../state/prefs.js';
+import { isTextEntryTarget } from '../text-entry.js';
 import { usePaneActive } from '../layout/pane-context.js';
-
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return (
-    target.isContentEditable ||
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    !!target.closest('[contenteditable="true"], [role="textbox"], [role="dialog"], [role="menu"], [role="listbox"], .monaco-editor')
-  );
-}
 
 interface Props {
   rows: ClusterRow[];
@@ -112,14 +101,25 @@ export function ResourceTable({
 
   const hiddenKey = (hiddenFields ?? []).join(',');
   const visibilityFromHidden = () => Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
-  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(visibilityFromHidden);
-  // Reset user-edited visibility when the default-hidden set changes, without
+  // A saved model wins over the default-hidden set; without one, visibility
+  // starts from (and resets with) the defaults.
+  const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
+  const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
+  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(() => storedVisibility ?? visibilityFromHidden());
+  // Reset unsaved visibility when the default-hidden set changes, without
   // paying an extra effect-driven render pass.
   const [prevHiddenKey, setPrevHiddenKey] = useState(hiddenKey);
   if (prevHiddenKey !== hiddenKey) {
     setPrevHiddenKey(hiddenKey);
-    setVisibility(visibilityFromHidden());
+    setVisibility(storedVisibility ?? visibilityFromHidden());
   }
+  const handleVisibilityChange = useCallback(
+    (model: GridColumnVisibilityModel) => {
+      setVisibility(model);
+      if (tableId) setStoredVisibility(tableId, model);
+    },
+    [tableId, setStoredVisibility],
+  );
   const tableDensity = useUiPrefsStore((s) => s.tableDensity);
   // Retrieve this table's saved column widths (if any)
   const storedWidths = useUiPrefsStore((s) => (tableId ? s.columnWidths[tableId] : undefined));
@@ -304,7 +304,7 @@ export function ResourceTable({
             : undefined
         }
         columnVisibilityModel={visibility}
-        onColumnVisibilityModelChange={setVisibility}
+        onColumnVisibilityModelChange={handleVisibilityChange}
         onColumnWidthChange={tableId ? (params) => setColumnWidth(tableId, params.colDef.field, params.width) : undefined}
         onCellKeyDown={handleCopyCellKeyDown}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}

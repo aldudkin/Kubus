@@ -32,6 +32,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import { NavLink, useLocation, useNavigate } from 'react-router';
 import { BUILTIN_NAV_GROUPS, groupToPath, gvkForResource, gvkLabel, pluralLabel, type FavoriteItem, type ResourceKindInfo, type SavedView } from '@kubus/shared';
 import { useApiResourcesForContexts } from '../api/queries.js';
+import { HOTKEY_MOD_LABEL } from '../platform.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useTabsStore } from '../state/tabs.js';
@@ -43,8 +44,6 @@ const ITEM_INDENT = '42px';
 const FAVORITE_DRAG_TYPE = 'application/x-kubus-favorite';
 const CUSTOM_GROUP_PREFIX = 'custom:';
 
-const IS_MAC = window.kubusDesktop ? window.kubusDesktop.platform === 'darwin' : /Mac|iP(hone|ad|od)/.test(navigator.platform);
-const HOTKEY_MOD_LABEL = IS_MAC ? '⌘' : 'Ctrl+';
 
 /**
  * The first nine navigable favorites, in sidebar order, get Cmd/Ctrl+1–9.

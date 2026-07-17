@@ -2,6 +2,7 @@ import { memo, useContext, useMemo, useRef } from 'react';
 import Box from '@mui/material/Box';
 import { UNSAFE_LocationContext, parsePath } from 'react-router';
 import { PageRoutes } from '../router.js';
+import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import { PaneActiveContext } from './pane-context.js';
 import { useTabsStore } from '../state/tabs.js';
 
@@ -58,7 +59,9 @@ const TabPane = memo(function TabPane({ id, path, active }: { id: string; path: 
     () => (
       <UNSAFE_LocationContext.Provider value={value}>
         <Box sx={{ position: 'absolute', inset: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-          <PageRoutes />
+          <ErrorBoundary label="This tab">
+            <PageRoutes />
+          </ErrorBoundary>
         </Box>
       </UNSAFE_LocationContext.Provider>
     ),

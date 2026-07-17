@@ -13,7 +13,7 @@ import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import SearchIcon from '@mui/icons-material/Search';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
+import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { gvkForKind, type KubeObject } from '@kubus/shared';
 import { useApiResourcesForContexts, useWatchedList, type ClusterRow } from '../api/queries.js';
@@ -21,8 +21,10 @@ import { useClustersStore } from '../state/clusters.js';
 import { useDetailStore } from '../state/detail.js';
 import { AgeCell } from '../components/AgeCell.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
+import { useGridPrefs } from '../components/grid-prefs.js';
 import { StatusChip } from '../components/StatusChip.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 interface EventObj extends KubeObject {
   type?: string;
@@ -194,8 +196,10 @@ export function EventsPage() {
     return defs.map(withCellCopy);
   }, [selected.length]);
 
+  const grid = useGridPrefs('events', columns);
+
   if (selected.length === 0) {
-    return <EmptyState icon={<HubOutlinedIcon />} title="No cluster selected" subtitle="Pick one or more clusters from the switcher in the top bar." />;
+    return <NoClustersState icon={<NotificationsNoneOutlinedIcon />} />;
   }
 
   const errors = Object.entries(list.status).filter(([, s]) => s.state === 'error');
@@ -203,7 +207,9 @@ export function EventsPage() {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
-        <Typography variant="h6">Events</Typography>
+        <PageHeader title="Events" icon={<NotificationsNoneOutlinedIcon />}>
+          <Chip label={`${rows.length} events`} variant="outlined" />
+        </PageHeader>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
             {ctx}: {s.message ?? 'watch error'}
@@ -241,14 +247,14 @@ export function EventsPage() {
           control={<Switch size="small" checked={warningsOnly} onChange={(e) => setWarningsOnly(e.target.checked)} />}
           label={<Typography variant="body2">Warnings only</Typography>}
         />
-        <Chip label={`${rows.length} events`} variant="outlined" />
       </Stack>
       <DataGrid
         rows={rows}
-        columns={columns}
+        columns={grid.columns}
         loading={Object.values(list.status).some((s) => s.state === 'loading')}
         getRowId={(r) => r.id}
-        density="compact"
+        density={grid.density}
+        onColumnWidthChange={grid.onColumnWidthChange}
         onRowClick={(p) => openInvolved(p.row as EventRow)}
         onCellKeyDown={handleCopyCellKeyDown}
         initialState={{ sorting: { sortModel: [{ field: 'lastSeen', sort: 'desc' }] } }}

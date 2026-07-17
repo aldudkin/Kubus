@@ -1,5 +1,4 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
@@ -9,7 +8,6 @@ import InputAdornment from '@mui/material/InputAdornment';
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
-import Snackbar from '@mui/material/Snackbar';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
@@ -25,6 +23,7 @@ import { useGlobalSearch } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useDockStore } from '../state/dock.js';
+import { showToast } from '../state/toast.js';
 import { actionsForRef, usePaletteRunner, type PaletteAction } from '../actions/resource-actions.js';
 
 function pathForRef(ref: ResourceRef): string {
@@ -82,7 +81,6 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [stage, setStage] = useState<{ ref: ResourceRef; title: string } | null>(null);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const deferredQuery = useDeferredValue(query);
   const commandMode = query.startsWith('>');
   const searchQuery = stage || commandMode ? '' : query;
@@ -172,8 +170,8 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
       const { ref } = stage;
       closeAll();
       void runAction(action, ref)
-        .then((text) => setToast({ severity: 'success', text }))
-        .catch((err: unknown) => setToast({ severity: 'error', text: err instanceof Error ? err.message : String(err) }));
+        .then((text) => showToast('success', text))
+        .catch((err: unknown) => showToast('error', err instanceof Error ? err.message : String(err)));
       return;
     }
     const item = row.result;
@@ -328,11 +326,6 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
           </List>
         </DialogContent>
       </Dialog>
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </>
   );
 }

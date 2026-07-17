@@ -1,8 +1,7 @@
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TopologyGraph } from '../components/TopologyGraph.js';
 import { useClustersStore } from '../state/clusters.js';
@@ -12,13 +11,7 @@ export function TopologyPage() {
   const namespaces = useClustersStore((s) => s.namespaces);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState
-        icon={<HubOutlinedIcon />}
-        title="No cluster selected"
-        subtitle="Pick one or more clusters from the switcher to view topology."
-      />
-    );
+    return <NoClustersState icon={<AccountTreeOutlinedIcon />} />;
   }
 
   return (

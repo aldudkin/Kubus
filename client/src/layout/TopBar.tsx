@@ -8,12 +8,15 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import BrightnessAutoOutlinedIcon from '@mui/icons-material/BrightnessAutoOutlined';
 import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
+import KeyboardOutlinedIcon from '@mui/icons-material/KeyboardOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SearchIcon from '@mui/icons-material/Search';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore } from '../state/dock.js';
+import { isTextEntryTarget } from '../text-entry.js';
+import { ShortcutHelpDialog } from '../components/ShortcutHelpDialog.js';
 import { ClusterSwitcher } from './ClusterSwitcher.js';
 import { NamespaceFilter } from './NamespaceFilter.js';
 
@@ -32,6 +35,7 @@ export const TopBar = memo(function TopBar() {
   const setDockOpen = useDockStore((s) => s.setOpen);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Mounted on first open, kept mounted after so close animations still play.
   const [searchMounted, setSearchMounted] = useState(false);
   const [settingsMounted, setSettingsMounted] = useState(false);
@@ -43,6 +47,11 @@ export const TopBar = memo(function TopBar() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+      if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTextEntryTarget(e.target)) {
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -105,6 +114,11 @@ export const TopBar = memo(function TopBar() {
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Keyboard shortcuts (?)">
+            <IconButton size="small" aria-label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)}>
+              <KeyboardOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title={mode === 'light' ? 'Switch to dark mode' : mode === 'dark' ? 'Follow system theme' : 'Switch to light mode'}>
             <IconButton size="small" onClick={toggleTheme}>
               {mode === 'light' ? <DarkModeOutlinedIcon fontSize="small" /> : mode === 'dark' ? <BrightnessAutoOutlinedIcon fontSize="small" /> : <LightModeOutlinedIcon fontSize="small" />}
@@ -127,6 +141,7 @@ export const TopBar = memo(function TopBar() {
           <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         </Suspense>
       )}
+      <ShortcutHelpDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </>
   );
 });

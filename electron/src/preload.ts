@@ -24,8 +24,8 @@ contextBridge.exposeInMainWorld('kubusDesktop', {
     return ipcRenderer.invoke('kubus:check-for-update', options);
   },
   // Fires when the user presses the OS close-window chord (Cmd/Ctrl+W). Returns
-  // an unsubscribe. The renderer closes the focused dock tab, or calls
-  // closeWindow() when there is nothing docked to close.
+  // an unsubscribe. The renderer closes the focused dock tab or page tab; it
+  // never closes the window from this chord.
   onCloseTab(callback: () => void): () => void {
     const listener = (): void => callback();
     ipcRenderer.on('kubus:close-tab', listener);
