@@ -11,6 +11,7 @@ import { DataGrid } from '@mui/x-data-grid';
 import type { PortForwardInfo } from '@kubus/shared';
 import { usePortForwards, useStopPortForward } from '../api/queries.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
+import { useGridPrefs } from '../components/grid-prefs.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -65,6 +66,8 @@ export function PortForwardsPage() {
     return defs.map(withCellCopy);
   }, [stop]);
 
+  const grid = useGridPrefs('port-forwards', columns);
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5 }}>
       <PageHeader title="Port Forwards" icon={<CableOutlinedIcon />}>
@@ -79,10 +82,11 @@ export function PortForwardsPage() {
       ) : (
         <DataGrid
           rows={data ?? []}
-          columns={columns}
+          columns={grid.columns}
           loading={isLoading}
           getRowId={(r) => r.id}
-          density="compact"
+          density={grid.density}
+          onColumnWidthChange={grid.onColumnWidthChange}
           onCellKeyDown={handleCopyCellKeyDown}
           sx={{ border: 0, ...copyCellGridSx }}
         />

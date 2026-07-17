@@ -13,8 +13,8 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
+import Skeleton from '@mui/material/Skeleton';
 import { alpha, useTheme } from '@mui/material/styles';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import QueryStatsOutlinedIcon from '@mui/icons-material/QueryStatsOutlined';
 import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
 import SdStorageOutlinedIcon from '@mui/icons-material/SdStorageOutlined';
@@ -25,7 +25,8 @@ import { LineChart } from '@mui/x-charts/LineChart';
 import type { ClusterMetricsSummary, MetricsSeriesEntry } from '@kubus/shared';
 import { useMetricsServerStatus, useMetricsSummary } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { ClusterSectionHeader } from '../components/ClusterSectionHeader.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { InstallMetricsServerButton, UninstallMetricsServerButton } from '../components/MetricsServerControls.js';
 import { formatBytes, formatCpu } from '../components/format.js';
 
@@ -42,7 +43,7 @@ export function MetricsPage() {
   const selected = useClustersStore((s) => s.selected);
 
   if (selected.length === 0) {
-    return <EmptyState icon={<QueryStatsOutlinedIcon />} title="Metrics" subtitle="Select one or more clusters in the top bar to see usage graphs." />;
+    return <NoClustersState icon={<QueryStatsOutlinedIcon />} />;
   }
 
   return (
@@ -65,9 +66,7 @@ function ClusterMetricsSection({ ctx }: { ctx: string }) {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} sx={{ mb: 1.5, alignItems: 'center', flexWrap: 'wrap', rowGap: 1 }}>
-        <HubOutlinedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
-        <Typography variant="h6">{ctx}</Typography>
+      <ClusterSectionHeader ctx={ctx}>
         {status?.version && <Chip size="small" variant="outlined" label={`metrics-server ${status.version}`} />}
         {installed && (
           <Chip
@@ -79,10 +78,10 @@ function ClusterMetricsSection({ ctx }: { ctx: string }) {
         )}
         <Box sx={{ flex: 1 }} />
         {installed && <UninstallMetricsServerButton ctx={ctx} status={status} />}
-      </Stack>
+      </ClusterSectionHeader>
 
       {error && <Alert severity="error">{error.message}</Alert>}
-      {!error && !status && <LinearProgress />}
+      {!error && !status && <Skeleton variant="rounded" height={140} />}
 
       {status && !installed && !available && (
         <Card variant="outlined">

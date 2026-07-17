@@ -13,8 +13,8 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
+import Skeleton from '@mui/material/Skeleton';
 import { alpha, useTheme } from '@mui/material/styles';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined';
 import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
 import SyncAltOutlinedIcon from '@mui/icons-material/SyncAltOutlined';
@@ -25,7 +25,8 @@ import { LineChart } from '@mui/x-charts/LineChart';
 import type { ClusterNetworkSummary, NetworkPeer, NetworkSeriesEntry } from '@kubus/shared';
 import { useNetworkAgentStatus, useNetworkSummary } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { ClusterSectionHeader } from '../components/ClusterSectionHeader.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { InstallNetworkAgentButton, UninstallNetworkAgentButton } from '../components/NetworkAgentControls.js';
 import { formatBps } from '../components/format.js';
 
@@ -40,13 +41,7 @@ export function NetworkMetricsPage() {
   const selected = useClustersStore((s) => s.selected);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState
-        icon={<NetworkCheckOutlinedIcon />}
-        title="Network Metrics"
-        subtitle="Select one or more clusters in the top bar to see pod-to-pod traffic."
-      />
-    );
+    return <NoClustersState icon={<NetworkCheckOutlinedIcon />} />;
   }
 
   return (
@@ -69,9 +64,7 @@ function ClusterNetworkSection({ ctx }: { ctx: string }) {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} sx={{ mb: 1.5, alignItems: 'center', flexWrap: 'wrap', rowGap: 1 }}>
-        <HubOutlinedIcon sx={{ fontSize: 18, color: 'primary.main' }} />
-        <Typography variant="h6">{ctx}</Typography>
+      <ClusterSectionHeader ctx={ctx}>
         {status?.version && <Chip size="small" variant="outlined" label={`retina ${status.version}`} />}
         {installed && (
           <Chip
@@ -86,10 +79,10 @@ function ClusterNetworkSection({ ctx }: { ctx: string }) {
         )}
         <Box sx={{ flex: 1 }} />
         {installed && <UninstallNetworkAgentButton ctx={ctx} status={status} />}
-      </Stack>
+      </ClusterSectionHeader>
 
       {error && <Alert severity="error">{error.message}</Alert>}
-      {!error && !status && <LinearProgress />}
+      {!error && !status && <Skeleton variant="rounded" height={140} />}
 
       {status && !installed && !available && (
         <Card variant="outlined">

@@ -9,9 +9,10 @@ import type { HelmReleaseSummary } from '@kubus/shared';
 import { useHelmReleases } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
+import { useGridPrefs } from '../components/grid-prefs.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { AgeCell } from '../components/AgeCell.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { PageHeader } from '../components/PageHeader.js';
 
 interface Row {
@@ -58,10 +59,10 @@ export function HelmPage() {
     return defs.map(withCellCopy);
   }, [selected.length]);
 
+  const grid = useGridPrefs('helm-releases', columns);
+
   if (selected.length === 0) {
-    return (
-      <EmptyState icon={<SailingOutlinedIcon />} title="No cluster selected" subtitle="Select a cluster to view Helm releases." />
-    );
+    return <NoClustersState icon={<SailingOutlinedIcon />} />;
   }
 
   return (
@@ -71,10 +72,11 @@ export function HelmPage() {
       </PageHeader>
       <DataGrid
         rows={rows}
-        columns={columns}
+        columns={grid.columns}
         loading={isLoading}
         getRowId={(r) => `${r.ctx}/${r.release.namespace}/${r.release.name}`}
-        density="compact"
+        density={grid.density}
+        onColumnWidthChange={grid.onColumnWidthChange}
         onRowClick={(p) => navigate(`/helm/${encodeURIComponent(p.row.ctx)}/${encodeURIComponent(p.row.release.namespace)}/${encodeURIComponent(p.row.release.name)}`)}
         onCellKeyDown={handleCopyCellKeyDown}
         sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' }, ...copyCellGridSx }}

@@ -7,13 +7,13 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import DialogTitle from '@mui/material/DialogTitle';
 import FormControlLabel from '@mui/material/FormControlLabel';
-import Snackbar from '@mui/material/Snackbar';
 import Typography from '@mui/material/Typography';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import type { MetricsServerStatus } from '@kubus/shared';
 import { useInstallMetricsServer, useUninstallMetricsServer } from '../api/queries.js';
 import { useIsProtected } from '../state/clusters.js';
+import { showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
@@ -24,7 +24,6 @@ import { ConfirmDialog } from './ConfirmDialog.js';
 export function InstallMetricsServerButton({ ctx, size = 'small' }: { ctx: string; size?: 'small' | 'medium' }) {
   const [open, setOpen] = useState(false);
   const [insecureTls, setInsecureTls] = useState(false);
-  const [toast, setToast] = useState<string>();
   const install = useInstallMetricsServer();
   const isProtected = useIsProtected(ctx);
 
@@ -69,11 +68,11 @@ export function InstallMetricsServerButton({ ctx, size = 'small' }: { ctx: strin
                 {
                   onSuccess: (r) => {
                     setOpen(false);
-                    setToast(`metrics-server installed (${r.applied.length} resources applied) — waiting for first samples…`);
+                    showToast('success', `metrics-server installed (${r.applied.length} resources applied) — waiting for first samples…`);
                   },
                   onError: (e) => {
                     setOpen(false);
-                    setToast(`Install failed: ${e.message}`);
+                    showToast('error', `Install failed: ${e.message}`);
                   },
                 },
               )
@@ -83,14 +82,12 @@ export function InstallMetricsServerButton({ ctx, size = 'small' }: { ctx: strin
           </Button>
         </DialogActions>
       </Dialog>
-      <Snackbar open={!!toast} autoHideDuration={6000} onClose={() => setToast(undefined)} message={toast} />
     </>
   );
 }
 
 export function UninstallMetricsServerButton({ ctx, status }: { ctx: string; status?: MetricsServerStatus }) {
   const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState<string>();
   const uninstall = useUninstallMetricsServer();
   const isProtected = useIsProtected(ctx);
 
@@ -126,17 +123,16 @@ export function UninstallMetricsServerButton({ ctx, status }: { ctx: string; sta
             {
               onSuccess: (r) => {
                 setOpen(false);
-                setToast(`metrics-server uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
+                showToast('success', `metrics-server uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
               },
               onError: (e) => {
                 setOpen(false);
-                setToast(`Uninstall failed: ${e.message}`);
+                showToast('error', `Uninstall failed: ${e.message}`);
               },
             },
           )
         }
       />
-      <Snackbar open={!!toast} autoHideDuration={6000} onClose={() => setToast(undefined)} message={toast} />
     </>
   );
 }

@@ -15,7 +15,6 @@ import ListItemText from '@mui/material/ListItemText';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
-import Snackbar from '@mui/material/Snackbar';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
@@ -55,6 +54,7 @@ import {
 import { watchClient } from '../api/ws/watch-client.js';
 import { useDockStore, dockTabId, type DockTab } from '../state/dock.js';
 import { useIsProtected } from '../state/clusters.js';
+import { showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { FileCopyDialog } from './FileCopyDialog.js';
 import { podContainerNames } from '../kube-display.js';
@@ -115,37 +115,27 @@ async function openLogsForTarget(target: RowActionTarget, addTab: (tab: DockTab)
 export function RowLogsButton({ target }: { target: RowActionTarget }) {
   const addTab = useDockStore((s) => s.addTab);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const actionKind = gvkForResource(target.group, target.version, target.plural)?.kind === target.kind ? target.kind : undefined;
   if (!actionKind || !isLogTargetKind(actionKind)) return null;
   return (
-    <>
-      <Tooltip title="Logs">
-        <span>
-          <IconButton
-            size="small"
-            aria-label={`Logs for ${target.obj.metadata.name}`}
-            disabled={busy}
-            onClick={(e) => {
-              e.stopPropagation();
-              setBusy(true);
-              openLogsForTarget(target, addTab)
-                .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            <SubjectIcon fontSize="small" />
-          </IconButton>
-        </span>
-      </Tooltip>
-      {error !== null && (
-        <Snackbar open autoHideDuration={5000} onClose={() => setError(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-          <Alert severity="error" variant="filled" onClose={() => setError(null)}>
-            {error}
-          </Alert>
-        </Snackbar>
-      )}
-    </>
+    <Tooltip title="Logs">
+      <span>
+        <IconButton
+          size="small"
+          aria-label={`Logs for ${target.obj.metadata.name}`}
+          disabled={busy}
+          onClick={(e) => {
+            e.stopPropagation();
+            setBusy(true);
+            openLogsForTarget(target, addTab)
+              .catch((err: unknown) => showToast('error', err instanceof Error ? err.message : String(err)))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <SubjectIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -175,7 +165,6 @@ export function RowActions({ target }: { target: RowActionTarget }) {
 
 export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose }: RowActionMenuProps) {
   const [dialog, setDialog] = useState<'delete' | 'scale' | 'forward' | 'drain' | 'restart-rs' | 'set-image' | 'debug' | 'node-shell' | 'files' | null>(null);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const [logsBusy, setLogsBusy] = useState(false);
 
   const del = useDeleteResource();
@@ -194,8 +183,8 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
   const isProtected = useIsProtected(ctx);
   const close = onClose;
 
-  const ok = (text: string) => setToast({ severity: 'success', text });
-  const fail = (err: unknown) => setToast({ severity: 'error', text: err instanceof Error ? err.message : String(err) });
+  const ok = (text: string) => showToast('success', text);
+  const fail = (err: unknown) => showToast('error', err instanceof Error ? err.message : String(err));
 
   const scalable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'ReplicaSet';
   const restartable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'DaemonSet';
@@ -552,12 +541,6 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
       {dialog === 'set-image' && <SetImageDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'forward' && <PortForwardDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'drain' && <DrainDialog target={target} onClose={() => setDialog(null)} />}
-
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </>
   );
 }

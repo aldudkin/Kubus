@@ -23,8 +23,11 @@ interface UiPrefsState {
   protectByDefault: boolean;
   /** User-resized column widths, keyed by table id then column field. */
   columnWidths: Record<string, Record<string, number>>;
+  /** User-toggled column visibility models, keyed by table id then column field. */
+  columnVisibility: Record<string, Record<string, boolean>>;
   set: (patch: Partial<Omit<UiPrefsState, 'set'>>) => void;
   setColumnWidth: (tableId: string, field: string, width: number) => void;
+  setColumnVisibility: (tableId: string, model: Record<string, boolean>) => void;
 }
 
 export const useUiPrefsStore = create<UiPrefsState>()(
@@ -37,10 +40,15 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       defaultShell: 'auto',
       protectByDefault: false,
       columnWidths: {},
+      columnVisibility: {},
       set: (patch) => set(patch),
       setColumnWidth: (tableId, field, width) =>
         set((state) => ({
           columnWidths: { ...state.columnWidths, [tableId]: { ...state.columnWidths[tableId], [field]: width } },
+        })),
+      setColumnVisibility: (tableId, model) =>
+        set((state) => ({
+          columnVisibility: { ...state.columnVisibility, [tableId]: model },
         })),
     }),
     { name: 'kubus-prefs', version: 0, storage: createJSONStorage(() => kubusStateStorage) },

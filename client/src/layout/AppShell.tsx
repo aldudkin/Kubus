@@ -6,6 +6,7 @@ import { NavDrawer } from './NavDrawer.js';
 import { TabsBar } from './TabsBar.js';
 import { TabPanes } from './TabPanes.js';
 import { BottomDock } from './BottomDock.js';
+import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import { useDockStore } from '../state/dock.js';
 import { useDetailStore } from '../state/detail.js';
 import { useTabsStore } from '../state/tabs.js';
@@ -47,7 +48,8 @@ export function AppShell() {
   }, [closeDetail, navigate]);
 
   // Cmd/Ctrl+W closes the focused dock tab (logs/terminal), then the active
-  // page tab, and only closes the window once a single page tab remains.
+  // page tab. With a single page tab left it does nothing — the chord must
+  // never close the window itself.
   useEffect(() => {
     const desktop = window.kubusDesktop;
     if (!desktop?.onCloseTab) return;
@@ -63,9 +65,7 @@ export function AppShell() {
         const next = useTabsStore.getState();
         const active = next.tabs.find((t) => t.id === next.activeId);
         if (active) void navigate(active.path);
-        return;
       }
-      desktop.closeWindow();
     });
   }, [navigate]);
 
@@ -85,9 +85,11 @@ export function AppShell() {
         </Box>
       </Box>
       {drawerMounted && (
-        <Suspense fallback={null}>
-          <ResourceDetailDrawer sel={detailIsEmbedded ? undefined : sel} onClose={handleDrawerClose} onBack={hasParent ? back : undefined} />
-        </Suspense>
+        <ErrorBoundary label="The details panel">
+          <Suspense fallback={null}>
+            <ResourceDetailDrawer sel={detailIsEmbedded ? undefined : sel} onClose={handleDrawerClose} onBack={hasParent ? back : undefined} />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </Box>
   );
