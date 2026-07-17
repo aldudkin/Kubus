@@ -106,11 +106,13 @@ export function ResourceTable({
   const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
   const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
   const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(() => storedVisibility ?? visibilityFromHidden());
-  // Reset unsaved visibility when the default-hidden set changes, without
-  // paying an extra effect-driven render pass.
-  const [prevHiddenKey, setPrevHiddenKey] = useState(hiddenKey);
-  if (prevHiddenKey !== hiddenKey) {
-    setPrevHiddenKey(hiddenKey);
+  // Re-seed visibility when this instance is reused for another table (same
+  // route, different kind — tableId changes) or when the default-hidden set
+  // changes, without paying an extra effect-driven render pass.
+  const visibilityKey = `${tableId ?? ''}|${hiddenKey}`;
+  const [prevVisibilityKey, setPrevVisibilityKey] = useState(visibilityKey);
+  if (prevVisibilityKey !== visibilityKey) {
+    setPrevVisibilityKey(visibilityKey);
     setVisibility(storedVisibility ?? visibilityFromHidden());
   }
   const handleVisibilityChange = useCallback(
