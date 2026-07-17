@@ -10,16 +10,18 @@ import type { GridColDef } from '@mui/x-data-grid';
 import { DataGrid } from '@mui/x-data-grid';
 import type { PortForwardInfo } from '@kubus/shared';
 import { usePortForwards, useStopPortForward } from '../api/queries.js';
+import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
+import { useGridPrefs } from '../components/grid-prefs.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { PageHeader } from '../components/PageHeader.js';
 
 export function PortForwardsPage() {
   const { data, isLoading } = usePortForwards();
-  const stop = useStopPortForward();
+  const { mutate: stop } = useStopPortForward();
 
-  const columns: GridColDef<PortForwardInfo>[] = useMemo(
-    () => [
+  const columns: GridColDef<PortForwardInfo>[] = useMemo(() => {
+    const defs: GridColDef<PortForwardInfo>[] = [
       {
         field: 'local',
         headerName: 'Local',
@@ -54,15 +56,17 @@ export function PortForwardsPage() {
         sortable: false,
         renderCell: (p) => (
           <Tooltip title="Stop forward">
-            <IconButton size="small" color="error" onClick={() => stop.mutate(p.row.id)}>
+            <IconButton size="small" color="error" onClick={() => stop(p.row.id)}>
               <StopIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         ),
       },
-    ],
-    [stop.mutate],
-  );
+    ];
+    return defs.map(withCellCopy);
+  }, [stop]);
+
+  const grid = useGridPrefs('port-forwards', columns);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5 }}>
@@ -76,7 +80,16 @@ export function PortForwardsPage() {
           subtitle="Start one from a Pod or Service row menu (⋮ → Port forward)."
         />
       ) : (
-        <DataGrid rows={data ?? []} columns={columns} loading={isLoading} getRowId={(r) => r.id} density="compact" sx={{ border: 0 }} />
+        <DataGrid
+          rows={data ?? []}
+          columns={grid.columns}
+          loading={isLoading}
+          getRowId={(r) => r.id}
+          density={grid.density}
+          onColumnWidthChange={grid.onColumnWidthChange}
+          onCellKeyDown={handleCopyCellKeyDown}
+          sx={{ border: 0, ...copyCellGridSx }}
+        />
       )}
     </Box>
   );

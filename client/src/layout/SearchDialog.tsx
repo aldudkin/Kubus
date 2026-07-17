@@ -1,5 +1,4 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
@@ -9,7 +8,6 @@ import InputAdornment from '@mui/material/InputAdornment';
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
-import Snackbar from '@mui/material/Snackbar';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
@@ -25,6 +23,7 @@ import { useGlobalSearch } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useDockStore } from '../state/dock.js';
+import { showToast } from '../state/toast.js';
 import { actionsForRef, usePaletteRunner, type PaletteAction } from '../actions/resource-actions.js';
 
 function pathForRef(ref: ResourceRef): string {
@@ -59,6 +58,7 @@ const STATIC_COMMANDS: StaticCommand[] = [
   { id: 'cmd:overview', title: 'Go to Overview', run: (d) => d.navigate('/') },
   { id: 'cmd:events', title: 'Go to Events', run: (d) => d.navigate('/events') },
   { id: 'cmd:topology', title: 'Go to Topology', run: (d) => d.navigate('/topology') },
+  { id: 'cmd:metrics', title: 'Go to Metrics', run: (d) => d.navigate('/metrics') },
   { id: 'cmd:helm', title: 'Go to Helm Releases', run: (d) => d.navigate('/helm') },
   { id: 'cmd:forwards', title: 'Go to Port Forwards', run: (d) => d.navigate('/forwards') },
   { id: 'cmd:diff', title: 'Go to Diff', run: (d) => d.navigate('/diff') },
@@ -81,7 +81,6 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [stage, setStage] = useState<{ ref: ResourceRef; title: string } | null>(null);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const deferredQuery = useDeferredValue(query);
   const commandMode = query.startsWith('>');
   const searchQuery = stage || commandMode ? '' : query;
@@ -117,7 +116,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   const rows = useMemo<Row[]>(() => {
     if (stage) {
       const f = deferredQuery.trim().toLowerCase();
-      return actionsForRef(stage.ref.kind)
+      return actionsForRef(stage.ref)
         .filter((a) => !f || a.title.toLowerCase().includes(f))
         .map((action) => ({ type: 'action', action }));
     }
@@ -163,21 +162,21 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
     if (row.type === 'action') {
       if (!stage) return;
       if (row.action.kind === 'detail') {
-        navigate(detailPathForRef(stage.ref));
+        void navigate(detailPathForRef(stage.ref));
         closeAll();
         return;
       }
       const { action } = row;
       const { ref } = stage;
       closeAll();
-      runAction(action, ref)
-        .then((text) => setToast({ severity: 'success', text }))
-        .catch((err: unknown) => setToast({ severity: 'error', text: err instanceof Error ? err.message : String(err) }));
+      void runAction(action, ref)
+        .then((text) => showToast('success', text))
+        .catch((err: unknown) => showToast('error', err instanceof Error ? err.message : String(err)));
       return;
     }
     const item = row.result;
     const path = item.ref ? detailPathForRef(item.ref) : item.path ?? '/';
-    navigate(path);
+    void navigate(path);
     closeAll();
   };
 
@@ -327,11 +326,6 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
           </List>
         </DialogContent>
       </Dialog>
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </>
   );
 }

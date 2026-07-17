@@ -1,12 +1,10 @@
-import { useState } from 'react';
-import Alert from '@mui/material/Alert';
+import { useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Link from '@mui/material/Link';
-import Snackbar from '@mui/material/Snackbar';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import Table from '@mui/material/Table';
@@ -17,22 +15,27 @@ import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
-import type { KubeObject, PodEnvVar } from '@kubus/shared';
+import type { ContainerUsage, KubeObject, PodEnvVar } from '@kubus/shared';
 import { gvkForKind } from '@kubus/shared';
-import { GenericDetail, KeyValueChips } from './GenericDetail.js';
+import { ConditionChips, KeyValueChips, KeyValueSection, MetadataSection } from './GenericDetail.js';
+import { Section } from './Section.js';
+import { ContainerCards, type ContainerCardData } from './ContainerCards.js';
 import { ReadyCounter } from '../ReadyCounter.js';
 import { StatusChip } from '../StatusChip.js';
 import { AgeCell } from '../AgeCell.js';
-import { podDebugContainers, podSummary } from '../../kube-display.js';
-import { usePodEnv, useStopDebug } from '../../api/queries.js';
+import { containerResources, podDebugContainers, podSummary } from '../../kube-display.js';
+import { usePodEnv, useResourceMetrics, useStopDebug } from '../../api/queries.js';
 import { useDetailStore } from '../../state/detail.js';
+import { showToast } from '../../state/toast.js';
 import { useDockStore, dockTabId } from '../../state/dock.js';
 
 interface ContainerSpec {
   name: string;
   image?: string;
+  restartPolicy?: string;
   ports?: Array<{ containerPort: number; protocol?: string }>;
   volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean; subPath?: string }>;
+  resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
 }
 
 interface ContainerStatus {
@@ -40,6 +43,7 @@ interface ContainerStatus {
   ready?: boolean;
   restartCount?: number;
   state?: Record<string, { reason?: string }>;
+  lastState?: { terminated?: { reason?: string; finishedAt?: string } };
 }
 
 interface VolumeSpec {
@@ -59,28 +63,69 @@ interface PodSpec {
   containers?: ContainerSpec[];
   initContainers?: ContainerSpec[];
   nodeName?: string;
+  serviceAccountName?: string;
   volumes?: VolumeSpec[];
   nodeSelector?: Record<string, string>;
   tolerations?: Toleration[];
 }
 
+type RelatedKind = 'Node' | 'ConfigMap' | 'Secret' | 'PersistentVolumeClaim' | 'ServiceAccount';
+
+function containerCard(c: ContainerSpec, st: ContainerStatus | undefined, usage: ContainerUsage | undefined, kind?: 'init' | 'sidecar'): ContainerCardData {
+  const stateKey = st?.state ? Object.keys(st.state)[0] : undefined;
+  const reason = stateKey ? (st!.state![stateKey]?.reason ?? stateKey) : undefined;
+  const last = st?.lastState?.terminated;
+  return {
+    name: c.name,
+    image: c.image,
+    kind,
+    state: reason ? (reason === 'running' ? 'Running' : reason === 'waiting' ? 'Waiting' : reason === 'terminated' ? 'Terminated' : reason) : undefined,
+    restarts: st?.restartCount,
+    lastRestart: last ? { reason: last.reason, at: last.finishedAt } : undefined,
+    ports: (c.ports ?? []).map((p) => `${p.containerPort}/${p.protocol ?? 'TCP'}`).join(', ') || undefined,
+    resources: containerResources(c),
+    usage: usage ? { cpuMilli: usage.cpuMilli, memBytes: usage.memBytes } : undefined,
+  };
+}
+
 export function PodDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
   const spec = obj.spec as PodSpec | undefined;
-  const status = obj.status as { podIP?: string; containerStatuses?: ContainerStatus[]; qosClass?: string } | undefined;
+  const status = obj.status as { phase?: string; podIP?: string; containerStatuses?: ContainerStatus[]; initContainerStatuses?: ContainerStatus[]; qosClass?: string } | undefined;
+  // Conditions on finished pods are stale (Ready=False is expected there).
+  const terminal = status?.phase === 'Succeeded' || status?.phase === 'Failed';
   const summary = podSummary(obj);
   const statusByName = new Map((status?.containerStatuses ?? []).map((c) => [c.name, c]));
+  const initStatusByName = new Map((status?.initContainerStatuses ?? []).map((c) => [c.name, c]));
   const push = useDetailStore((s) => s.push);
   const namespace = obj.metadata.namespace;
 
-  const openRelated = (kind: 'Node' | 'ConfigMap' | 'Secret' | 'PersistentVolumeClaim', name: string) => {
+  const metricsQuery = useResourceMetrics([ctx], 'pods');
+  const usageByContainer = useMemo(() => {
+    const snap = metricsQuery.data?.get(ctx);
+    if (!snap?.available) return new Map<string, ContainerUsage>();
+    const entry = snap.items.find((i) => i.namespace === namespace && i.name === obj.metadata.name);
+    return new Map((entry?.containers ?? []).map((c) => [c.name, c]));
+  }, [metricsQuery.data, ctx, namespace, obj.metadata.name]);
+
+  const openRelated = (kind: RelatedKind, name: string) => {
     const gvk = gvkForKind(kind);
     if (!gvk) return;
     push({ ctx, group: gvk.group, version: gvk.version, plural: gvk.plural, kind, name, namespace: gvk.namespaced ? namespace : undefined });
   };
 
+  // Restartable init containers are sidecars: they run alongside the app
+  // containers, so they card with them; one-shot inits get their own section.
+  const sidecars = (spec?.initContainers ?? []).filter((c) => c.restartPolicy === 'Always');
+  const inits = (spec?.initContainers ?? []).filter((c) => c.restartPolicy !== 'Always');
+  const mainCards = [
+    ...(spec?.containers ?? []).map((c) => containerCard(c, statusByName.get(c.name), usageByContainer.get(c.name))),
+    ...sidecars.map((c) => containerCard(c, initStatusByName.get(c.name), usageByContainer.get(c.name), 'sidecar')),
+  ];
+  const initCards = inits.map((c) => containerCard(c, initStatusByName.get(c.name), usageByContainer.get(c.name), 'init'));
+
   return (
-    <Box>
-      <Stack direction="row" spacing={1} sx={{ px: 2, pt: 2, flexWrap: 'wrap' }}>
+    <Stack spacing={2} sx={{ p: 2 }}>
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 1, alignItems: 'center' }}>
         <StatusChip status={summary.status} />
         <Chip label={<>Ready <ReadyCounter value={summary.ready} /></>} variant="outlined" />
         <Chip label={`Restarts ${summary.restarts}`} variant="outlined" />
@@ -89,50 +134,27 @@ export function PodDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
           <Chip label={`Node ${spec.nodeName}`} variant="outlined" clickable onClick={() => openRelated('Node', spec.nodeName!)} />
         )}
         {status?.qosClass && <Chip label={`QoS ${status.qosClass}`} variant="outlined" />}
+        {spec?.serviceAccountName && (
+          <Chip label={`SA ${spec.serviceAccountName}`} variant="outlined" clickable onClick={() => openRelated('ServiceAccount', spec.serviceAccountName!)} />
+        )}
+        {!terminal && <ConditionChips obj={obj} />}
       </Stack>
-      <Box sx={{ px: 2, pt: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-          Containers
-        </Typography>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Image</TableCell>
-              <TableCell>State</TableCell>
-              <TableCell>Restarts</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {[...(spec?.initContainers ?? []).map((c) => ({ ...c, init: true })), ...(spec?.containers ?? []).map((c) => ({ ...c, init: false }))].map((c) => {
-              const st = statusByName.get(c.name);
-              const stateKey = st?.state ? Object.keys(st.state)[0] : undefined;
-              const reason = stateKey ? (st!.state![stateKey]?.reason ?? stateKey) : '';
-              return (
-                <TableRow key={c.name}>
-                  <TableCell>
-                    {c.name}
-                    {c.init && <Chip label="init" sx={{ ml: 0.5, height: 16, fontSize: 10 }} />}
-                  </TableCell>
-                  <TableCell sx={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.image}>
-                    {c.image}
-                  </TableCell>
-                  <TableCell>
-                    <StatusChip status={reason === 'running' ? 'Running' : reason} />
-                  </TableCell>
-                  <TableCell>{st?.restartCount ?? 0}</TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </Box>
+      <Section title="Containers" count={mainCards.length}>
+        <ContainerCards items={mainCards} />
+      </Section>
+      {initCards.length > 0 && (
+        <Section title="Init containers" count={initCards.length}>
+          <ContainerCards items={initCards} />
+        </Section>
+      )}
       <DebugContainersSection obj={obj} ctx={ctx} />
       {namespace && <EnvSection ctx={ctx} namespace={namespace} pod={obj.metadata.name} onOpenRef={openRelated} />}
       <VolumesSection spec={spec} onOpenRef={openRelated} />
       <SchedulingSection spec={spec} />
-      <GenericDetail obj={obj} ctx={ctx} />
-    </Box>
+      <KeyValueSection title="Labels" entries={obj.metadata.labels} />
+      <KeyValueSection title="Annotations" entries={obj.metadata.annotations} defaultOpen={false} />
+      <MetadataSection obj={obj} ctx={ctx} defaultOpen={false} />
+    </Stack>
   );
 }
 
@@ -140,15 +162,11 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
   const debugContainers = podDebugContainers(obj);
   const stop = useStopDebug();
   const addTab = useDockStore((s) => s.addTab);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   if (!debugContainers.length) return null;
   const namespace = obj.metadata.namespace ?? '';
   const pod = obj.metadata.name;
   return (
-    <Box sx={{ px: 2, pt: 2 }}>
-      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-        Debug containers
-      </Typography>
+    <Section title="Debug containers" count={debugContainers.length}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
         Ephemeral containers cannot be removed from the pod; stopped ones stay listed until the pod is recreated.
       </Typography>
@@ -196,8 +214,8 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
                         stop.mutate(
                           { ctx, body: { namespace, pod, container: c.name } },
                           {
-                            onSuccess: () => setToast({ severity: 'success', text: `Stopping ${c.name} — it exits within a second` }),
-                            onError: (e) => setToast({ severity: 'error', text: e instanceof Error ? e.message : String(e) }),
+                            onSuccess: () => showToast('success', `Stopping ${c.name} — it exits within a second`),
+                            onError: (e) => showToast('error', e instanceof Error ? e.message : String(e)),
                           },
                         )
                       }
@@ -211,16 +229,11 @@ function DebugContainersSection({ obj, ctx }: { obj: KubeObject; ctx: string }) 
           ))}
         </TableBody>
       </Table>
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
-    </Box>
+    </Section>
   );
 }
 
-type RefOpener = (kind: 'Node' | 'ConfigMap' | 'Secret' | 'PersistentVolumeClaim', name: string) => void;
+type RefOpener = (kind: RelatedKind, name: string) => void;
 
 function envSourceLabel(env: PodEnvVar): { text: string; refKind?: 'ConfigMap' | 'Secret'; refName?: string } {
   const s = env.source;
@@ -240,17 +253,17 @@ function EnvSection({ ctx, namespace, pod, onOpenRef }: { ctx: string; namespace
   if (!isLoading && containers.length === 0) return null;
 
   return (
-    <Box sx={{ px: 2, pt: 2 }}>
-      <Stack direction="row" sx={{ mb: 0.5, alignItems: 'center' }}>
-        <Typography variant="subtitle2">Environment</Typography>
-        <Box sx={{ flex: 1 }} />
-        {hasSecrets && (
+    <Section
+      title="Environment"
+      actions={
+        hasSecrets ? (
           <FormControlLabel
             control={<Switch size="small" checked={reveal} onChange={(e) => setReveal(e.target.checked)} />}
             label={<Typography variant="caption">Reveal secret values</Typography>}
           />
-        )}
-      </Stack>
+        ) : undefined
+      }
+    >
       {isLoading && <CircularProgress size={18} />}
       {containers.map((c) => (
         <Box key={`${c.init ? 'i' : 'c'}:${c.name}`} sx={{ mb: 1.5 }}>
@@ -294,7 +307,7 @@ function EnvSection({ ctx, namespace, pod, onOpenRef }: { ctx: string; namespace
           </Table>
         </Box>
       ))}
-    </Box>
+    </Section>
   );
 }
 
@@ -329,10 +342,7 @@ function VolumesSection({ spec, onOpenRef }: { spec: PodSpec | undefined; onOpen
     }
   }
   return (
-    <Box sx={{ px: 2, pt: 2 }}>
-      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-        Volumes
-      </Typography>
+    <Section title="Volumes" count={volumes.length}>
       <Table size="small">
         <TableHead>
           <TableRow>
@@ -362,7 +372,7 @@ function VolumesSection({ spec, onOpenRef }: { spec: PodSpec | undefined; onOpen
           })}
         </TableBody>
       </Table>
-    </Box>
+    </Section>
   );
 }
 
@@ -371,10 +381,7 @@ function SchedulingSection({ spec }: { spec: PodSpec | undefined }) {
   const nodeSelector = spec?.nodeSelector ?? {};
   if (!tolerations.length && !Object.keys(nodeSelector).length) return null;
   return (
-    <Box sx={{ px: 2, pt: 2 }}>
-      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-        Scheduling
-      </Typography>
+    <Section title="Scheduling">
       <Stack spacing={1.5}>
         <KeyValueChips title="Node selector" entries={Object.keys(nodeSelector).length ? nodeSelector : undefined} />
         {tolerations.length > 0 && (
@@ -402,6 +409,6 @@ function SchedulingSection({ spec }: { spec: PodSpec | undefined }) {
           </Table>
         )}
       </Stack>
-    </Box>
+    </Section>
   );
 }

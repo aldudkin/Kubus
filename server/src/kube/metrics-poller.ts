@@ -20,6 +20,10 @@ export class MetricsPoller {
   private latestPods: MetricsSnapshotEntry[] = [];
   private timer?: NodeJS.Timeout;
   private stopped = false;
+  private polling = false;
+  private lastPollStart = 0;
+  /** Bumped by markUnavailable() so an in-flight poll can't overwrite the reset. */
+  private epoch = 0;
 
   constructor(
     private metrics: Metrics,
@@ -48,11 +52,52 @@ export class MetricsPoller {
     return (kind === 'node' ? this.nodes.get(name) : this.pods.get(`${namespace ?? ''}/${name}`)) ?? [];
   }
 
-  private async poll(): Promise<void> {
+  nodeHistories(): ReadonlyMap<string, MetricsSample[]> {
+    return this.nodes;
+  }
+
+  /** Keys are `namespace/name`. */
+  podHistories(): ReadonlyMap<string, MetricsSample[]> {
+    return this.pods;
+  }
+
+  /**
+   * Poll soon instead of waiting out the (slow) unavailable interval — used
+   * right after installing/uninstalling metrics-server. Throttled so status
+   * probes can call it freely.
+   */
+  kick(): void {
+    if (this.stopped || this.polling || Date.now() - this.lastPollStart < 5_000) return;
+    if (this.timer) clearTimeout(this.timer);
+    void this.poll();
+  }
+
+  /**
+   * Drop to unavailable right now — metrics-server was just uninstalled, and
+   * waiting for the next poll to fail would keep serving stale usage for up
+   * to a poll interval. The regular (slow) probe cadence resumes after, so a
+   * failed uninstall self-corrects on the next successful poll.
+   */
+  markUnavailable(): void {
+    this.epoch++;
+    this.available = false;
+    this.latestNodes = [];
+    this.latestPods = [];
+    if (this.timer) clearTimeout(this.timer);
     if (this.stopped) return;
+    this.timer = setTimeout(() => void this.poll(), UNAVAILABLE_POLL_MS);
+    this.timer.unref();
+  }
+
+  private async poll(): Promise<void> {
+    if (this.stopped || this.polling) return;
+    this.polling = true;
+    this.lastPollStart = Date.now();
+    const epoch = this.epoch;
     try {
       const t = Date.now();
       const [nodeList, podList] = await Promise.all([this.metrics.getNodeMetrics(), this.metrics.getPodMetrics()]);
+      if (epoch !== this.epoch) return; // reset while in flight — discard this round
       this.available = true;
 
       this.latestNodes = nodeList.items.map((n) => ({
@@ -68,13 +113,18 @@ export class MetricsPoller {
       prune(this.nodes, liveNodes);
 
       this.latestPods = podList.items.map((p) => {
+        const containers = p.containers.map((c) => ({
+          name: c.name,
+          cpuMilli: cpuToMilli(c.usage.cpu),
+          memBytes: memToBytes(c.usage.memory),
+        }));
         let cpuMilli = 0;
         let memBytes = 0;
-        for (const c of p.containers) {
-          cpuMilli += cpuToMilli(c.usage.cpu);
-          memBytes += memToBytes(c.usage.memory);
+        for (const c of containers) {
+          cpuMilli += c.cpuMilli;
+          memBytes += c.memBytes;
         }
-        return { name: p.metadata.name, namespace: p.metadata.namespace, cpuMilli, memBytes };
+        return { name: p.metadata.name, namespace: p.metadata.namespace, cpuMilli, memBytes, containers };
       });
       const livePods = new Set<string>();
       for (const entry of this.latestPods) {
@@ -88,6 +138,8 @@ export class MetricsPoller {
       this.available = false;
       this.latestNodes = [];
       this.latestPods = [];
+    } finally {
+      this.polling = false;
     }
     if (this.stopped) return;
     this.timer = setTimeout(() => void this.poll(), this.available ? POLL_MS : UNAVAILABLE_POLL_MS);

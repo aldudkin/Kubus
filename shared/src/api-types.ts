@@ -477,6 +477,12 @@ export interface MetricsSample {
   memBytes: number;
 }
 
+export interface ContainerUsage {
+  name: string;
+  cpuMilli: number;
+  memBytes: number;
+}
+
 export interface MetricsSnapshotEntry {
   name: string;
   namespace?: string;
@@ -485,6 +491,8 @@ export interface MetricsSnapshotEntry {
   /** Node only: allocatable totals for utilization %. */
   cpuCapacityMilli?: number;
   memCapacityBytes?: number;
+  /** Pod only: per-container usage breakdown. */
+  containers?: ContainerUsage[];
 }
 
 export interface MetricsSnapshot {
@@ -495,6 +503,157 @@ export interface MetricsSnapshot {
 export interface MetricsHistoryResponse {
   available: boolean;
   series: MetricsSample[];
+}
+
+// ---- metrics-server install / uninstall ----
+
+export interface MetricsServerStatus {
+  /** metrics-server Deployment or metrics.k8s.io APIService found in the cluster. */
+  installed: boolean;
+  /** The kube-system Deployment carries the Kubus managed-by label. */
+  managedByKubus: boolean;
+  /** Deployment reports at least one ready replica. */
+  ready: boolean;
+  /** Image tag of the metrics-server container, when the Deployment exists. */
+  version?: string;
+  /** The metrics poller is currently getting usage data. */
+  metricsAvailable: boolean;
+}
+
+export interface MetricsServerInstallRequest {
+  /**
+   * Pass --kubelet-insecure-tls. Needed on most local/dev clusters (kind,
+   * minikube, docker-desktop) whose kubelets serve self-signed certs.
+   */
+  insecureTls?: boolean;
+}
+
+export interface MetricsServerInstallResult {
+  applied: string[];
+}
+
+export interface MetricsServerUninstallResult {
+  deleted: string[];
+  failed: Array<{ resource: string; error: string }>;
+}
+
+// ---- Metrics summary (Metrics page) ----
+
+export interface MetricsSeriesEntry {
+  name: string;
+  namespace?: string;
+  series: MetricsSample[];
+  /** Nodes only: allocatable totals for utilization %. */
+  cpuCapacityMilli?: number;
+  memCapacityBytes?: number;
+}
+
+export interface NamespaceUsage {
+  namespace: string;
+  cpuMilli: number;
+  memBytes: number;
+  pods: number;
+}
+
+export interface ClusterMetricsSummary {
+  available: boolean;
+  /** Node usage summed per poll tick — the cluster-wide series. */
+  clusterSeries: MetricsSample[];
+  cpuCapacityMilli?: number;
+  memCapacityBytes?: number;
+  nodes: MetricsSeriesEntry[];
+  topPodsCpu: MetricsSeriesEntry[];
+  topPodsMem: MetricsSeriesEntry[];
+  namespaces: NamespaceUsage[];
+  podCount: number;
+}
+
+// ---- Network metrics (network agent) ----
+
+export interface NetworkAgentStatus {
+  /** The kubus-network-agent DaemonSet exists in the cluster. */
+  installed: boolean;
+  /** The DaemonSet carries the Kubus managed-by label. */
+  managedByKubus: boolean;
+  /** At least one agent pod is ready. */
+  ready: boolean;
+  /** Image tag of the agent container, when the DaemonSet exists. */
+  version?: string;
+  nodesReady: number;
+  nodesDesired: number;
+  /** The network poller is currently getting traffic data. */
+  metricsAvailable: boolean;
+}
+
+export interface NetworkAgentInstallResult {
+  applied: string[];
+}
+
+export interface NetworkAgentUninstallResult {
+  deleted: string[];
+  failed: Array<{ resource: string; error: string }>;
+}
+
+export interface NetworkSample {
+  /** epoch millis */
+  t: number;
+  /** bytes per second leaving this pod */
+  sentBps: number;
+  /** bytes per second arriving at this pod */
+  recvBps: number;
+}
+
+export interface NetworkThroughputSample {
+  /** epoch millis */
+  t: number;
+  /** total observed bytes per second, each flow counted once */
+  bps: number;
+}
+
+export interface NetworkSeriesEntry {
+  name: string;
+  namespace?: string;
+  series: NetworkSample[];
+}
+
+export type NetworkPeerKind = 'pod' | 'service' | 'node' | 'external';
+
+export interface NetworkPeer {
+  kind: NetworkPeerKind;
+  namespace?: string;
+  /** Pod/service/node name, or the raw IP for external peers. */
+  name: string;
+}
+
+/**
+ * Observed traffic between two endpoints, direction-neutral (the agent sees
+ * packets, not who connected to whom). Rates are per-second deltas between
+ * the last two agent scrapes. Pod endpoints sort before non-pod ones.
+ */
+export interface NetworkLink {
+  a: NetworkPeer;
+  b: NetworkPeer;
+  /** bytes per second a→b */
+  abBps: number;
+  /** bytes per second b→a */
+  baBps: number;
+  retransmitsPerSec: number;
+  /** dropped bytes per second (network policy denies, conntrack, …) */
+  droppedBps: number;
+}
+
+export interface ClusterNetworkSummary {
+  available: boolean;
+  agentsReady: number;
+  agentsDesired: number;
+  /** All link rates summed per poll tick — the cluster-wide series. */
+  clusterSeries: NetworkThroughputSample[];
+  topPodsSent: NetworkSeriesEntry[];
+  topPodsRecv: NetworkSeriesEntry[];
+  /** Busiest links by total rate (capped); linkCount is the uncapped total. */
+  links: NetworkLink[];
+  linkCount: number;
+  podCount: number;
 }
 
 // ---- Overview ----

@@ -8,9 +8,11 @@ import { DataGrid } from '@mui/x-data-grid';
 import type { HelmReleaseSummary } from '@kubus/shared';
 import { useHelmReleases } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
+import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
+import { useGridPrefs } from '../components/grid-prefs.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { AgeCell } from '../components/AgeCell.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { PageHeader } from '../components/PageHeader.js';
 
 interface Row {
@@ -31,8 +33,8 @@ export function HelmPage() {
     return all.filter((r) => set.has(r.release.namespace));
   }, [data, namespaces]);
 
-  const columns: GridColDef<Row>[] = useMemo(
-    () => [
+  const columns: GridColDef<Row>[] = useMemo(() => {
+    const defs: GridColDef<Row>[] = [
       { field: 'name', headerName: 'Release', flex: 1, minWidth: 160, valueGetter: (_v, row) => row.release.name },
       { field: 'namespace', headerName: 'Namespace', width: 130, valueGetter: (_v, row) => row.release.namespace },
       ...(selected.length > 1 ? [{ field: 'cluster', headerName: 'Cluster', width: 140, valueGetter: (_v: never, row: Row) => row.ctx } as GridColDef<Row>] : []),
@@ -53,14 +55,14 @@ export function HelmPage() {
         valueGetter: (_v, row) => row.release.updated ?? '',
         renderCell: (p) => <AgeCell timestamp={p.row.release.updated} />,
       },
-    ],
-    [selected.length],
-  );
+    ];
+    return defs.map(withCellCopy);
+  }, [selected.length]);
+
+  const grid = useGridPrefs('helm-releases', columns);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState icon={<SailingOutlinedIcon />} title="No cluster selected" subtitle="Select a cluster to view Helm releases." />
-    );
+    return <NoClustersState icon={<SailingOutlinedIcon />} />;
   }
 
   return (
@@ -70,12 +72,14 @@ export function HelmPage() {
       </PageHeader>
       <DataGrid
         rows={rows}
-        columns={columns}
+        columns={grid.columns}
         loading={isLoading}
         getRowId={(r) => `${r.ctx}/${r.release.namespace}/${r.release.name}`}
-        density="compact"
+        density={grid.density}
+        onColumnWidthChange={grid.onColumnWidthChange}
         onRowClick={(p) => navigate(`/helm/${encodeURIComponent(p.row.ctx)}/${encodeURIComponent(p.row.release.namespace)}/${encodeURIComponent(p.row.release.name)}`)}
-        sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' } }}
+        onCellKeyDown={handleCopyCellKeyDown}
+        sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' }, ...copyCellGridSx }}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
       />
     </Box>

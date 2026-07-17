@@ -10,7 +10,7 @@ const setSshHostSchema = z.object({
     .string()
     .trim()
     .max(256)
-    .regex(/^(ssh:\/\/)?[A-Za-z0-9][A-Za-z0-9._~%@:\[\]-]*$/, 'SSH jump host must be an ssh config alias, user@host or ssh://user@host:port')
+    .regex(/^(ssh:\/\/)?[A-Za-z0-9][A-Za-z0-9._~%@:[\]-]*$/, 'SSH jump host must be an ssh config alias, user@host or ssh://user@host:port')
     .nullable()
     .or(z.literal('')),
 });
@@ -28,7 +28,7 @@ const editClusterSchema = z.object({
     .string()
     .trim()
     .max(256)
-    .regex(/^(ssh:\/\/)?[A-Za-z0-9][A-Za-z0-9._~%@:\[\]-]*$/, 'SSH jump host must be an ssh config alias, user@host or ssh://user@host:port')
+    .regex(/^(ssh:\/\/)?[A-Za-z0-9][A-Za-z0-9._~%@:[\]-]*$/, 'SSH jump host must be an ssh config alias, user@host or ssh://user@host:port')
     .nullable()
     .or(z.literal(''))
     .optional(),
@@ -96,6 +96,16 @@ export function registerContextRoutes(app: FastifyInstance, ctx: AppContext): vo
       const parsed = setSshHostSchema.safeParse(req.body);
       if (!parsed.success) throw new HttpProblem(400, parsed.error.issues[0]?.message ?? 'invalid body', 'BadRequest');
       ctx.clusters.setSshHost(req.params.ctx, parsed.data.sshHost || null);
+      return ctx.clusters.listContexts();
+    } catch (err) {
+      sendError(reply, err);
+      return reply;
+    }
+  });
+
+  app.delete<{ Params: { ctx: string } }>('/api/contexts/:ctx', async (req, reply) => {
+    try {
+      ctx.clusters.removeContext(req.params.ctx);
       return ctx.clusters.listContexts();
     } catch (err) {
       sendError(reply, err);

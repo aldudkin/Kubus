@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useState } from 'react';
 import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -8,18 +8,26 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import BrightnessAutoOutlinedIcon from '@mui/icons-material/BrightnessAutoOutlined';
 import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
+import KeyboardOutlinedIcon from '@mui/icons-material/KeyboardOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import SearchIcon from '@mui/icons-material/Search';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore } from '../state/dock.js';
+import { isTextEntryTarget } from '../text-entry.js';
+import { ShortcutHelpDialog } from '../components/ShortcutHelpDialog.js';
 import { ClusterSwitcher } from './ClusterSwitcher.js';
 import { NamespaceFilter } from './NamespaceFilter.js';
-import { SearchDialog } from './SearchDialog.js';
-import { SettingsDialog } from '../components/settings/SettingsDialog.js';
 
-export function TopBar() {
+// Both dialogs open only on user action; lazy keeps them (and the cluster
+// dialogs' js-yaml dependency) out of the first paint.
+const loadSearchDialog = () => import('./SearchDialog.js');
+const loadSettingsDialog = () => import('../components/settings/SettingsDialog.js');
+const SearchDialog = lazy(() => loadSearchDialog().then((m) => ({ default: m.SearchDialog })));
+const SettingsDialog = lazy(() => loadSettingsDialog().then((m) => ({ default: m.SettingsDialog })));
+
+export const TopBar = memo(function TopBar() {
   const mode = useClustersStore((s) => s.themeMode);
   const toggleTheme = useClustersStore((s) => s.toggleTheme);
   const dockOpen = useDockStore((s) => s.open);
@@ -27,12 +35,23 @@ export function TopBar() {
   const setDockOpen = useDockStore((s) => s.setOpen);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Mounted on first open, kept mounted after so close animations still play.
+  const [searchMounted, setSearchMounted] = useState(false);
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  if (searchOpen && !searchMounted) setSearchMounted(true);
+  if (settingsOpen && !settingsMounted) setSettingsMounted(true);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+      if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTextEntryTarget(e.target)) {
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -84,7 +103,7 @@ export function TopBar() {
           <NamespaceFilter />
           <Box sx={{ flex: 1 }} />
           <Tooltip title="Search (Ctrl+K)">
-            <IconButton size="small" onClick={() => setSearchOpen(true)}>
+            <IconButton size="small" onClick={() => setSearchOpen(true)} onMouseEnter={() => void loadSearchDialog()} onFocus={() => void loadSearchDialog()}>
               <SearchIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -95,20 +114,34 @@ export function TopBar() {
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Keyboard shortcuts (?)">
+            <IconButton size="small" aria-label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)}>
+              <KeyboardOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title={mode === 'light' ? 'Switch to dark mode' : mode === 'dark' ? 'Follow system theme' : 'Switch to light mode'}>
             <IconButton size="small" onClick={toggleTheme}>
               {mode === 'light' ? <DarkModeOutlinedIcon fontSize="small" /> : mode === 'dark' ? <BrightnessAutoOutlinedIcon fontSize="small" /> : <LightModeOutlinedIcon fontSize="small" />}
             </IconButton>
           </Tooltip>
           <Tooltip title="Settings">
-            <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+            <IconButton size="small" onClick={() => setSettingsOpen(true)} onMouseEnter={() => void loadSettingsDialog()} onFocus={() => void loadSettingsDialog()}>
               <SettingsOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         </Toolbar>
       </AppBar>
-      <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {searchMounted && (
+        <Suspense fallback={null}>
+          <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
+        </Suspense>
+      )}
+      {settingsMounted && (
+        <Suspense fallback={null}>
+          <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        </Suspense>
+      )}
+      <ShortcutHelpDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </>
   );
-}
+});

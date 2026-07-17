@@ -12,6 +12,11 @@ export interface GVK {
   namespaced: boolean;
 }
 
+/** Compact, unambiguous group/version/kind label for resource UI. */
+export function gvkLabel(gvk: Pick<GVK, 'group' | 'version' | 'kind'>): string {
+  return `${gvk.group || 'core'}/${gvk.version}/${gvk.kind}`;
+}
+
 export interface NavGroup {
   title: string;
   kinds: GVK[];
@@ -26,6 +31,14 @@ const core = (plural: string, kind: string, namespaced = true): GVK => ({
 });
 
 export const BUILTIN_NAV_GROUPS: NavGroup[] = [
+  {
+    title: 'Cluster',
+    kinds: [
+      core('nodes', 'Node', false),
+      core('namespaces', 'Namespace', false),
+      core('events', 'Event'),
+    ],
+  },
   {
     title: 'Workloads',
     kinds: [
@@ -67,14 +80,6 @@ export const BUILTIN_NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: 'Cluster',
-    kinds: [
-      core('nodes', 'Node', false),
-      core('namespaces', 'Namespace', false),
-      core('events', 'Event'),
-    ],
-  },
-  {
     title: 'Access Control',
     kinds: [
       core('serviceaccounts', 'ServiceAccount'),
@@ -89,13 +94,13 @@ export const BUILTIN_NAV_GROUPS: NavGroup[] = [
 /** Semantic column ids per kind; the client maps these to renderers. */
 export const KIND_COLUMNS: Record<string, string[]> = {
   Pod: ['name', 'namespace', 'cluster', 'ready', 'podStatus', 'restarts', 'cpu', 'memory', 'node', 'age'],
-  Deployment: ['name', 'namespace', 'cluster', 'workloadReady', 'upToDate', 'available', 'age'],
-  StatefulSet: ['name', 'namespace', 'cluster', 'workloadReady', 'age'],
-  DaemonSet: ['name', 'namespace', 'cluster', 'dsDesired', 'dsReady', 'age'],
-  ReplicaSet: ['name', 'namespace', 'cluster', 'workloadReady', 'age'],
+  Deployment: ['name', 'namespace', 'cluster', 'workloadReady', 'upToDate', 'available', 'cpu', 'memory', 'age'],
+  StatefulSet: ['name', 'namespace', 'cluster', 'workloadReady', 'cpu', 'memory', 'age'],
+  DaemonSet: ['name', 'namespace', 'cluster', 'dsDesired', 'dsReady', 'cpu', 'memory', 'age'],
+  ReplicaSet: ['name', 'namespace', 'cluster', 'workloadReady', 'cpu', 'memory', 'age'],
   Job: ['name', 'namespace', 'cluster', 'jobCompletions', 'jobDuration', 'age'],
   CronJob: ['name', 'namespace', 'cluster', 'cronSchedule', 'cronSuspend', 'cronLastSchedule', 'age'],
-  Service: ['name', 'namespace', 'cluster', 'svcType', 'svcClusterIP', 'svcPorts', 'age'],
+  Service: ['name', 'namespace', 'cluster', 'svcType', 'svcClusterIP', 'svcLoadBalancerIP', 'svcPorts', 'age'],
   Ingress: ['name', 'namespace', 'cluster', 'ingressClass', 'ingressHosts', 'age'],
   ConfigMap: ['name', 'namespace', 'cluster', 'dataKeys', 'age'],
   Secret: ['name', 'namespace', 'cluster', 'secretType', 'dataKeys', 'age'],

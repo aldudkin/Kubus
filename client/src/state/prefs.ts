@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { kubusStateStorage } from './persist-storage.js';
@@ -22,8 +23,11 @@ interface UiPrefsState {
   protectByDefault: boolean;
   /** User-resized column widths, keyed by table id then column field. */
   columnWidths: Record<string, Record<string, number>>;
+  /** User-toggled column visibility models, keyed by table id then column field. */
+  columnVisibility: Record<string, Record<string, boolean>>;
   set: (patch: Partial<Omit<UiPrefsState, 'set'>>) => void;
   setColumnWidth: (tableId: string, field: string, width: number) => void;
+  setColumnVisibility: (tableId: string, model: Record<string, boolean>) => void;
 }
 
 export const useUiPrefsStore = create<UiPrefsState>()(
@@ -36,18 +40,29 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       defaultShell: 'auto',
       protectByDefault: false,
       columnWidths: {},
+      columnVisibility: {},
       set: (patch) => set(patch),
       setColumnWidth: (tableId, field, width) =>
         set((state) => ({
           columnWidths: { ...state.columnWidths, [tableId]: { ...state.columnWidths[tableId], [field]: width } },
         })),
+      setColumnVisibility: (tableId, model) =>
+        set((state) => ({
+          columnVisibility: { ...state.columnVisibility, [tableId]: model },
+        })),
     }),
-    { name: 'kubus-prefs', storage: createJSONStorage(() => kubusStateStorage) },
+    { name: 'kubus-prefs', version: 0, storage: createJSONStorage(() => kubusStateStorage) },
   ),
 );
 
-/** Scale a polled query's base interval by the user's refresh-rate preset. */
+/**
+ * Scale a polled query's base interval by the user's refresh-rate preset.
+ * A stable per-mount ±10% jitter decorrelates the timers of components that
+ * poll with the same base (e.g. one overview section per cluster), so many
+ * clusters don't fire synchronized request bursts.
+ */
 export function useRefetchInterval(base: number): number | false {
   const rate = useUiPrefsStore((s) => s.refreshRate);
-  return rate === 'off' ? false : base * REFRESH_FACTOR[rate];
+  const [jitter] = useState(() => 0.9 + Math.random() * 0.2);
+  return rate === 'off' ? false : Math.round(base * REFRESH_FACTOR[rate] * jitter);
 }

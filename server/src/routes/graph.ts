@@ -42,10 +42,6 @@ interface RelationHint {
   selector?: Record<string, string>;
 }
 
-interface LabelSelector {
-  matchLabels?: Record<string, string>;
-}
-
 interface FocusQuery {
   namespace?: string;
   focusGroup?: string;
@@ -105,7 +101,8 @@ function statusFor(kind: string, obj: KubeObject): { status: GraphNodeStatus; re
     return ready >= desired ? { status: 'success' } : { status: 'warning', reason: `${ready}/${desired} ready` };
   }
   if (kind === 'Job') {
-    if ((st.failed as number | undefined) && !st.active) return { status: 'error', reason: `${st.failed} failed` };
+    const failed = st.failed as number | undefined;
+    if (failed && !st.active) return { status: 'error', reason: `${failed} failed` };
     if ((st.succeeded as number | undefined) && !st.active) return { status: 'success' };
     return { status: 'unknown' };
   }
@@ -228,10 +225,18 @@ function hintLabel(path: string): string {
 
 async function listKind(handle: ClusterHandle, spec: KindSpec, namespaces: Set<string> | undefined, warnings: string[]): Promise<Item[]> {
   try {
-    const query = new URLSearchParams({ limit: '2000' });
     const namespace = spec.namespaced && namespaces?.size === 1 ? [...namespaces][0] : undefined;
-    const list = await handle.raw.json<{ items?: KubeObject[] }>(resourcePath(spec.group, spec.version, spec.plural, { namespace, query }));
-    const items = (list.items ?? []).filter((obj) => !spec.namespaced || !namespaces?.size || namespaces.has(obj.metadata.namespace ?? ''));
+    // All-namespaces reads reuse a warm watcher cache instead of a fresh LIST.
+    const watcher = namespace === undefined ? handle.watchers.peek(spec.group, spec.version, spec.plural) : undefined;
+    let all: KubeObject[];
+    if (watcher?.currentState() === 'live') {
+      all = watcher.items();
+    } else {
+      const query = new URLSearchParams({ limit: '2000' });
+      const list = await handle.raw.json<{ items?: KubeObject[] }>(resourcePath(spec.group, spec.version, spec.plural, { namespace, query }));
+      all = list.items ?? [];
+    }
+    const items = all.filter((obj) => !spec.namespaced || !namespaces?.size || namespaces.has(obj.metadata.namespace ?? ''));
     return items.map((obj) => ({ spec, obj }));
   } catch (err) {
     warnings.push(`${spec.kind}: ${err instanceof Error ? err.message : String(err)}`);

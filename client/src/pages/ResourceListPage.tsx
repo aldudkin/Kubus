@@ -1,30 +1,237 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import ButtonBase from '@mui/material/ButtonBase';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Link from '@mui/material/Link';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/Add';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SubjectIcon from '@mui/icons-material/Subject';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import BookmarkAddOutlinedIcon from '@mui/icons-material/BookmarkAddOutlined';
 import { useParams, useSearchParams } from 'react-router';
-import { columnsForKind, groupFromPath, groupToPath, gvkForResource, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
+import { columnsForKind, groupFromPath, groupToPath, gvkForResource, gvkLabel, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
 import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, useWatchedList, type ClusterRow } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
-import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup } from '../components/columns.js';
-import type { ResourceSelection } from '../components/ResourceDetailDrawer.js';
-import { useDetailStore } from '../state/detail.js';
-import { RowActionMenu, RowActions, type RowActionTarget } from '../components/RowActions.js';
+import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
+import { buildColumns, buildCrdColumns, crdHiddenFields, makeMetricsLookup, makeNodeAllocationLookup, makeWorkloadMetricsLookup, METRIC_COLUMN_IDS, WORKLOAD_METRIC_KINDS } from '../components/columns.js';
+import { ResourceDetailPanel, type ResourceSelection } from '../components/ResourceDetailDrawer.js';
+import { clampDetailWidth, DEFAULT_DETAIL_WIDTH, useDetailStore } from '../state/detail.js';
+import { isLogTargetKind, RowActionMenu, RowActions, RowLogsButton, type RowActionTarget } from '../components/RowActions.js';
 import { YamlEditor } from '../components/YamlEditor.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
 import { useNavigationStore } from '../state/navigation.js';
+import { usePaneActive } from '../layout/pane-context.js';
 import { addLabelTerm } from '../label-selector.js';
+
+/**
+ * Renderless bridge between this page's URL params and the shared detail
+ * selection. Pages stay mounted (and live) in hidden tab panes, so everything
+ * here gates on pane activity: only the visible pane may drive the detail view or
+ * rewrite the URL. Kept out of ResourceListPage so activation flips re-render
+ * this stub instead of the whole page.
+ */
+function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
+  const paneActive = usePaneActive();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openDetail = useDetailStore((s) => s.open);
+  const closeDetail = useDetailStore((s) => s.close);
+
+  // Drop the legacy `field` param from deep links.
+  useEffect(() => {
+    if (!paneActive || !searchParams.has('field')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('field');
+    setSearchParams(next, { replace: true });
+  }, [paneActive, searchParams, setSearchParams]);
+
+  // Mirror the URL selection into the detail view. On activation this re-runs
+  // and enforces this tab's selection (open its ?sel, or close a leftover).
+  useEffect(() => {
+    if (!paneActive) return;
+    if (sel) openDetail(sel);
+    else closeDetail();
+  }, [paneActive, sel, openDetail, closeDetail]);
+
+  // Close the detail view when the visible page unmounts (in-tab navigation or
+  // closing the active tab); a hidden tab being closed leaves it alone.
+  const paneActiveRef = useRef(paneActive);
+  paneActiveRef.current = paneActive;
+  useEffect(
+    () => () => {
+      if (paneActiveRef.current) closeDetail();
+    },
+    [closeDetail],
+  );
+  return null;
+}
+
+/**
+ * Side-by-side detail view. Unlike the global overlay drawer it never blocks
+ * the table (other rows stay clickable) and only closes explicitly — but it
+ * also only takes space while a resource is selected. The divider drags to
+ * resize, and a small pill handle on it collapses the panel without dropping
+ * the selection.
+ */
+function EmbeddedResourceDetail() {
+  // Keep the detail stack mounted so editor state survives tab switches, but
+  // pause its effects and hidden rendering work with an Activity boundary.
+  const paneActive = usePaneActive();
+  const stack = useDetailStore((s) => s.stack);
+  const back = useDetailStore((s) => s.back);
+  const close = useDetailStore((s) => s.close);
+  const collapsed = useDetailStore((s) => s.collapsed);
+  const setCollapsed = useDetailStore((s) => s.setCollapsed);
+  const width = useDetailStore((s) => s.width);
+  const setWidth = useDetailStore((s) => s.setWidth);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const asideRef = useRef<HTMLElement>(null);
+
+  // Drag writes the width straight to the DOM; once the mouseup commit
+  // re-renders with the same value, drop the inline override so sx takes
+  // over again (otherwise collapse and double-click reset can't shrink it).
+  useLayoutEffect(() => {
+    if (asideRef.current) asideRef.current.style.width = '';
+  }, [width, collapsed]);
+
+  const sel = stack.at(-1);
+  if (!sel) return null;
+
+  const handleClose = () => {
+    close();
+    if (!searchParams.has('sel')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('sel');
+    setSearchParams(next, { replace: true });
+  };
+
+  // Same drag pattern as BottomDock: width goes straight to the DOM (one
+  // write per frame) and the store is committed once on mouseup.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const el = asideRef.current;
+    if (!el) return;
+    const startX = e.clientX;
+    const startWidth = useDetailStore.getState().width;
+    let pending = startWidth;
+    let frame = 0;
+    el.style.transition = 'none';
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev: MouseEvent) => {
+      pending = clampDetailWidth(startWidth + (startX - ev.clientX));
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          el.style.width = `${pending}px`;
+        });
+      }
+    };
+    const onUp = () => {
+      if (frame) cancelAnimationFrame(frame);
+      el.style.width = `${pending}px`;
+      el.style.transition = '';
+      document.body.style.cursor = '';
+      setWidth(pending);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  return (
+    <Activity mode={paneActive ? 'visible' : 'hidden'}>
+      <Box
+        component="aside"
+        ref={asideRef}
+        aria-label="Resource details"
+        sx={{
+          position: 'relative',
+          flexShrink: 0,
+          minHeight: 0,
+          width: collapsed ? 0 : width,
+          maxWidth: '70%',
+          transition: 'width 150ms ease',
+          bgcolor: 'background.paper',
+          borderLeft: 1,
+          borderColor: 'divider',
+        }}
+      >
+        {!collapsed && (
+          <Box
+            onMouseDown={startResize}
+            onDoubleClick={() => setWidth(DEFAULT_DETAIL_WIDTH)}
+            // z 71/72 on the handles: the grid's floating scrollbars sit at
+            // z 60 (70 on hover) in the same stacking context and would
+            // otherwise swallow clicks on the halves that overhang the table.
+            sx={{
+              position: 'absolute',
+              left: -4,
+              top: 0,
+              bottom: 0,
+              width: 8,
+              cursor: 'col-resize',
+              zIndex: 71,
+              '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
+            }}
+          >
+            <Box
+              className="drag-line"
+              sx={{
+                position: 'absolute',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 3,
+                height: '100%',
+                bgcolor: 'primary.main',
+                opacity: 0,
+                transition: 'opacity 120ms ease',
+              }}
+            />
+          </Box>
+        )}
+        <Tooltip title={collapsed ? 'Expand details' : 'Collapse details'} placement="left">
+          <ButtonBase
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? 'Expand resource details' : 'Collapse resource details'}
+            aria-expanded={!collapsed}
+            sx={{
+              position: 'absolute',
+              top: '50%',
+              left: collapsed ? 'auto' : 0,
+              right: collapsed ? 0 : 'auto',
+              transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
+              zIndex: 72,
+              width: 20,
+              height: 52,
+              borderRadius: '10px',
+              border: 1,
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+              boxShadow: 2,
+              color: 'text.secondary',
+              '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+            }}
+          >
+            {collapsed ? <ChevronLeftIcon sx={{ fontSize: 16 }} /> : <ChevronRightIcon sx={{ fontSize: 16 }} />}
+          </ButtonBase>
+        </Tooltip>
+        {/* Kept mounted through a collapse so tab/editor state survives; inert
+            drops it from tab order while it is hidden. */}
+        <Box inert={collapsed} sx={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <ResourceDetailPanel sel={sel} onClose={handleClose} onBack={stack.length > 1 ? back : undefined} />
+        </Box>
+      </Box>
+    </Activity>
+  );
+}
 
 export function ResourceListPage() {
   const params = useParams<{ group: string; version: string; plural: string }>();
@@ -40,29 +247,32 @@ export function ResourceListPage() {
   );
   const builtinKind = useMemo(() => gvkForResource(group, version, plural), [group, version, plural]);
   const kind = kindInfo?.kind ?? builtinKind?.kind ?? plural;
+  const behaviorKind = builtinKind?.kind === kind ? kind : undefined;
   const resourceTitle = pluralLabel(kind);
+  const resourceGvk = gvkLabel({ group, version, kind });
   const namespaced = kindInfo?.namespaced ?? true;
   const isCustomKind = !!kindInfo?.custom;
+  const resourceInfo = useMemo<ResourceKindInfo>(
+    () => kindInfo ?? { group, version, plural, kind, namespaced: builtinKind?.namespaced ?? true, verbs: [] },
+    [kindInfo, group, version, plural, kind, builtinKind],
+  );
 
   const [searchParams, setSearchParams] = useSearchParams();
   const textFilter = searchParams.get('q') ?? '';
   const labelSelector = searchParams.get('label') ?? '';
 
-  useEffect(() => {
-    if (!searchParams.has('field')) return;
-    const next = new URLSearchParams(searchParams);
-    next.delete('field');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
-
   const list = useFilteredList(group, version, plural, namespaced, { labelSelector });
-  const isPodOrNode = kind === 'Pod' || kind === 'Node';
-  const { data: podMetrics } = useResourceMetrics(isPodOrNode ? selected : [], kind === 'Node' ? 'nodes' : 'pods');
-  const metricsUnavailable = isPodOrNode ? selected.filter((ctx) => podMetrics?.get(ctx)?.available === false) : [];
-  const nodePods = useWatchedList(kind === 'Node' ? selected : [], '', 'v1', 'pods');
-  const nodeAllocation = useMemo(() => (kind === 'Node' ? makeNodeAllocationLookup(nodePods.rows) : undefined), [kind, nodePods.rows]);
+  const isWorkloadMetricsKind = !!behaviorKind && WORKLOAD_METRIC_KINDS.has(behaviorKind);
+  const wantsMetrics = behaviorKind === 'Pod' || behaviorKind === 'Node' || isWorkloadMetricsKind;
+  const { data: podMetrics } = useResourceMetrics(wantsMetrics ? selected : [], behaviorKind === 'Node' ? 'nodes' : 'pods');
+  const metricsUnavailable = wantsMetrics ? selected.filter((ctx) => podMetrics?.get(ctx)?.available === false) : [];
+  // Node lists watch all pods for allocation totals; workload lists watch them
+  // to attribute per-pod usage to the owning workload.
+  const auxPods = useWatchedList(behaviorKind === 'Node' || isWorkloadMetricsKind ? selected : [], '', 'v1', 'pods');
+  const nodeAllocation = useMemo(() => (behaviorKind === 'Node' ? makeNodeAllocationLookup(auxPods.rows) : undefined), [behaviorKind, auxPods.rows]);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [apiResourceOpen, setApiResourceOpen] = useState(false);
   const [selectedRows, setSelectedRows] = useState<ClusterRow[]>([]);
   const [contextAction, setContextAction] = useState<{ target: RowActionTarget; mouseX: number; mouseY: number } | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -79,28 +289,6 @@ export function ResourceListPage() {
     if (!ctx || !name) return undefined;
     return { ctx, group, version, plural, kind, name, namespace: namespace || undefined, custom: isCustomKind };
   }, [searchParams, group, version, plural, kind, isCustomKind]);
-
-  // Mirror the URL selection into the global detail drawer; close on unmount.
-  const openDetail = useDetailStore((s) => s.open);
-  const closeDetail = useDetailStore((s) => s.close);
-  const detailOpen = useDetailStore((s) => s.stack.length > 0);
-  useEffect(() => {
-    if (sel) openDetail(sel);
-    else closeDetail();
-  }, [sel, openDetail, closeDetail]);
-  useEffect(() => () => closeDetail(), [closeDetail]);
-  // Drawer closed via its X → drop the ?sel deep link. The ref guards
-  // against clearing on mount, before the mirror effect has opened it.
-  const wasDetailOpen = useRef(false);
-  useEffect(() => {
-    if (wasDetailOpen.current && !detailOpen && searchParams.get('sel')) {
-      const next = new URLSearchParams(searchParams);
-      next.delete('sel');
-      setSearchParams(next);
-    }
-    wasDetailOpen.current = detailOpen;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailOpen]);
 
   // `replace` keeps filter typing from flooding the history stack.
   const setQueryParam = (key: string, value: string) => {
@@ -130,20 +318,23 @@ export function ResourceListPage() {
     [setSearchParams],
   );
 
-  // CRD printer columns: taken from the first selected cluster that serves
-  // this GVR — multi-cluster CRD definition drift is not reconciled.
-  const crdCtx = useMemo(
+  // Schema and CRD printer columns come from the first selected cluster that
+  // serves this GVR — multi-cluster definition drift is not reconciled.
+  const resourceCtx = useMemo(
     () => selected.find((c) => (apiResources?.byContext[c] ?? []).some((r) => r.group === group && r.version === version && r.plural === plural)),
     [selected, apiResources, group, version, plural],
   );
-  const { data: printerCols } = useCrdColumns(crdCtx, group, version, plural, isCustomKind);
+  const { data: printerCols } = useCrdColumns(resourceCtx, group, version, plural, isCustomKind);
 
-  // For CRD-backed kinds the page title links to the defining CRD.
+  // CRD-backed kinds additionally expose their defining CRD from the generic
+  // API Resource view.
   const pushDetail = useDetailStore((s) => s.push);
+  const openDetail = useDetailStore((s) => s.open);
+  const setDetailCollapsed = useDetailStore((s) => s.setCollapsed);
   const crdSelection: ResourceSelection | undefined =
-    isCustomKind && crdCtx && group
+    isCustomKind && resourceCtx && group
       ? {
-          ctx: crdCtx,
+          ctx: resourceCtx,
           group: 'apiextensions.k8s.io',
           version: 'v1',
           plural: 'customresourcedefinitions',
@@ -157,11 +348,22 @@ export function ResourceListPage() {
     [group, version, plural, kind],
   );
 
-  const metricsLookup = useMemo(() => makeMetricsLookup(kind, podMetrics), [kind, podMetrics]);
+  const metricsLookup = useMemo(
+    () =>
+      isWorkloadMetricsKind
+        ? makeWorkloadMetricsLookup(behaviorKind ?? '', auxPods.rows, podMetrics)
+        : makeMetricsLookup(behaviorKind ?? 'Resource', podMetrics),
+    [isWorkloadMetricsKind, behaviorKind, auxPods.rows, podMetrics],
+  );
 
-  const columns = useMemo(() => {
-    const ids = columnsForKind(kind, namespaced);
-    const opts = { multiCluster: selected.length > 1, metrics: metricsLookup, nodeAllocation, onLabelClick: addLabelFilter };
+  const columnIds = useMemo(() => columnsForKind(behaviorKind ?? 'Resource', namespaced), [behaviorKind, namespaced]);
+
+  // Static columns are built without the metrics/allocation lookups so the
+  // 20 s metrics poll (or, on Node lists, any pod churn) doesn't hand the
+  // grid a full set of fresh defs — that re-renders every visible cell.
+  const staticColumns = useMemo(() => {
+    const ids = columnIds.filter((id) => !METRIC_COLUMN_IDS.has(id));
+    const opts = { multiCluster: selected.length > 1, onLabelClick: addLabelFilter };
     const cols = buildColumns(ids, opts);
     if (isCustomKind && printerCols?.length) {
       const crdIdx = cols.findIndex((c) => c.field === 'age');
@@ -170,39 +372,72 @@ export function ResourceListPage() {
     // Labels for every kind, right before Age.
     const ageIdx = cols.findIndex((c) => c.field === 'age');
     cols.splice(ageIdx === -1 ? cols.length : ageIdx, 0, ...buildColumns(['labels'], opts));
+    const quickLogs = !!behaviorKind && isLogTargetKind(behaviorKind);
     cols.push({
       field: '_actions',
       headerName: '',
-      width: 50,
+      width: quickLogs ? 84 : 50,
       sortable: false,
       filterable: false,
-      renderCell: (p) => <RowActions target={rowActionTarget(p.row)} />,
+      renderCell: (p) => (
+        <>
+          {quickLogs && <RowLogsButton target={rowActionTarget(p.row)} />}
+          <RowActions target={rowActionTarget(p.row)} />
+        </>
+      ),
     });
     return cols;
-  }, [kind, namespaced, selected.length, metricsLookup, nodeAllocation, isCustomKind, printerCols, rowActionTarget, addLabelFilter]);
+  }, [columnIds, selected.length, addLabelFilter, isCustomKind, printerCols, rowActionTarget, behaviorKind]);
+
+  const metricColumns = useMemo(() => {
+    const ids = columnIds.filter((id) => METRIC_COLUMN_IDS.has(id));
+    if (!ids.length) return [];
+    return buildColumns(ids, { multiCluster: false, metrics: metricsLookup, nodeAllocation });
+  }, [columnIds, metricsLookup, nodeAllocation]);
+
+  const columns = useMemo(() => {
+    if (!metricColumns.length) return staticColumns;
+    const merged = [...staticColumns];
+    for (const col of metricColumns) {
+      // Insert before the first following non-metric column present in the
+      // merged list, falling back to just before the actions column.
+      const at = columnIds.indexOf(col.field);
+      let insertAt = merged.length - 1;
+      for (let i = at + 1; i < columnIds.length; i++) {
+        const id = columnIds[i]!;
+        if (METRIC_COLUMN_IDS.has(id)) continue;
+        const idx = merged.findIndex((c) => c.field === id);
+        if (idx !== -1) {
+          insertAt = idx;
+          break;
+        }
+      }
+      merged.splice(insertAt, 0, col);
+    }
+    return merged;
+  }, [staticColumns, metricColumns, columnIds]);
   const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
 
-  const supportsGvr = (r: ResourceKindInfo) => r.group === group && r.version === version && r.plural === plural;
   const discoveryMissing = useMemo(() => {
     if (!apiResources) return [];
     return selected.filter((ctx) => {
       if (apiResources.errors[ctx]) return false;
-      return !(apiResources.byContext[ctx] ?? []).some(supportsGvr);
+      return !(apiResources.byContext[ctx] ?? []).some((r) => r.group === group && r.version === version && r.plural === plural);
     });
   }, [apiResources, selected, group, version, plural]);
   const unavailable = Object.entries(list.status).filter(([, s]) => s.state === 'unavailable');
   const unavailableContexts = new Set(unavailable.map(([ctx]) => ctx));
   const discoveryOnlyMissing = discoveryMissing.filter((ctx) => !unavailableContexts.has(ctx));
   const errors = Object.entries(list.status).filter(([, s]) => s.state === 'error');
+  const activeRowId = useMemo(() => {
+    if (!sel) return undefined;
+    return list.rows.find(
+      (row) => row.ctx === sel.ctx && row.obj.metadata.name === sel.name && row.obj.metadata.namespace === sel.namespace,
+    )?.obj.metadata.uid;
+  }, [list.rows, sel]);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState
-        icon={<HubOutlinedIcon />}
-        title="No cluster selected"
-        subtitle="Pick one or more clusters from the switcher in the top bar."
-      />
-    );
+    return <NoClustersState />;
   }
 
   const multiLogs = kind === 'Pod' && selectedRows.length > 0;
@@ -223,23 +458,24 @@ export function ResourceListPage() {
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <DetailUrlSync sel={sel} />
+      <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {crdSelection ? (
-            <Link
-              component="button"
-              variant="h6"
-              underline="hover"
-              color="inherit"
-              title={`Open CRD ${crdSelection.name}`}
-              onClick={() => pushDetail(crdSelection)}
-            >
-              {resourceTitle}
-            </Link>
-          ) : (
-            <Typography variant="h6">{resourceTitle}</Typography>
-          )}
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+          <Link
+            component="button"
+            variant="h6"
+            underline="hover"
+            color="primary"
+            title={`Open API resource ${resourceGvk}`}
+            onClick={() => setApiResourceOpen(true)}
+          >
+            {resourceTitle}
+          </Link>
+          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+            {resourceGvk}
+          </Typography>
         </Box>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
@@ -267,17 +503,19 @@ export function ResourceListPage() {
         rows={list.rows}
         columns={columns}
         loading={Object.values(list.status).some((s) => s.state === 'loading')}
-        kind={kind}
+        kind={behaviorKind ?? 'Resource'}
         metricsLookup={metricsLookup}
         filter={textFilter}
         labelSelector={labelSelector}
         onFilterChange={(value) => setQueryParam('q', value)}
         onLabelSelectorChange={(value) => setQueryParam('label', value)}
         onRowClick={(row) => {
-          // Open the drawer directly — going through ?sel alone would delay it
-          // by a full render + post-paint effect; the URL write below is kept
-          // for deep-linking and the mirror effect re-opens an equal selection.
+          // Update immediately so the embedded panel responds in the same
+          // render cycle; the URL remains the deep-link source of truth.
+          // Picking a row is an explicit ask for details, so also undo a
+          // collapse.
           openDetail({ ctx: row.ctx, group, version, plural, kind, name: row.obj.metadata.name, namespace: row.obj.metadata.namespace, custom: isCustomKind });
+          setDetailCollapsed(false);
           const next = new URLSearchParams(searchParams);
           next.delete('field');
           next.set('sel', `${row.ctx}|${row.obj.metadata.namespace ?? ''}|${row.obj.metadata.name}`);
@@ -290,6 +528,7 @@ export function ResourceListPage() {
         checkboxSelection={kind === 'Pod'}
         onSelectionChange={kind === 'Pod' ? setSelectedRows : undefined}
         hiddenFields={hiddenFields}
+        activeRowId={activeRowId}
         toolbar={
           <>
             <Button startIcon={<BookmarkAddOutlinedIcon />} variant="outlined" onClick={saveCurrentView}>
@@ -339,6 +578,20 @@ export function ResourceListPage() {
           onClose={() => setContextMenuOpen(false)}
         />
       )}
+      <ApiResourceDrawer
+        open={apiResourceOpen}
+        ctx={resourceCtx}
+        resource={resourceInfo}
+        onClose={() => setApiResourceOpen(false)}
+        onOpenCrd={
+          crdSelection
+            ? () => {
+                setApiResourceOpen(false);
+                pushDetail(crdSelection);
+              }
+            : undefined
+        }
+      />
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth slotProps={{ paper: { sx: { height: '80vh' } } }}>
         <DialogTitle>Create resource{selected.length > 1 ? ` on ${selected[0]}` : ''}</DialogTitle>
         <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column' }}>
@@ -354,6 +607,8 @@ export function ResourceListPage() {
           />
         </DialogContent>
       </Dialog>
+      </Box>
+      <EmbeddedResourceDetail />
     </Box>
   );
 }

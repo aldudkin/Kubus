@@ -19,7 +19,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
+import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
 import VerifiedUserOutlinedIcon from '@mui/icons-material/VerifiedUserOutlined';
 import { useQueryClient } from '@tanstack/react-query';
 import type { AuditFinding, AuditSeverity } from '@kubus/shared';
@@ -28,6 +28,8 @@ import { useClustersStore } from '../state/clusters.js';
 import { useDetailStore } from '../state/detail.js';
 import { useAuditPrefsStore } from '../state/audit.js';
 import { EmptyState } from '../components/EmptyState.js';
+import { NoClustersState } from '../components/NoClustersState.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 const SEVERITIES: AuditSeverity[] = ['critical', 'high', 'medium', 'low'];
 
@@ -140,7 +142,7 @@ export function AuditPage() {
   const listErrors = reports.flatMap((r) => (r.report?.errors ?? []).map((e) => `${r.ctx}: ${e}`));
 
   if (selected.length === 0) {
-    return <EmptyState icon={<HubOutlinedIcon />} title="No cluster selected" subtitle="Pick one or more clusters from the switcher in the top bar." />;
+    return <NoClustersState icon={<GppMaybeOutlinedIcon />} />;
   }
   if (isLoading) {
     return <EmptyState icon={<CircularProgress size={40} />} title="Auditing…" subtitle={`Running security checks across ${selected.join(', ')}`} />;
@@ -157,8 +159,7 @@ export function AuditPage() {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'auto', px: 1.5, pt: 1.5, pb: 2 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-        <Typography variant="h6">Security Audit</Typography>
+      <PageHeader title="Security Audit" icon={<GppMaybeOutlinedIcon />}>
         <Typography variant="caption" color="text.secondary">
           {checksRun} checks · {totalScanned} resources · {selected.length} cluster{selected.length > 1 ? 's' : ''}
         </Typography>
@@ -180,7 +181,7 @@ export function AuditPage() {
         <Button size="small" startIcon={<DownloadIcon />} onClick={() => downloadFile('kubus-audit.sarif', 'application/json', toSarif(activeFindings))}>
           SARIF
         </Button>
-      </Box>
+      </PageHeader>
 
       <Stack direction="row" spacing={1} sx={{ mt: 1, alignItems: 'center', flexWrap: 'wrap' }}>
         {SEVERITIES.map((s) => (
@@ -263,8 +264,11 @@ export function AuditPage() {
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                   {group.remediation}
                 </Typography>
-                {group.findings.map((f, i) => (
-                  <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'baseline', py: 0.25, flexWrap: 'wrap' }}>
+                {group.findings.map((f) => (
+                  <Box
+                    key={`${f.resource.ctx}:${f.resource.uid ?? `${f.resource.namespace ?? ''}/${f.resource.kind}/${f.resource.name}`}:${f.message}`}
+                    sx={{ display: 'flex', gap: 1, alignItems: 'baseline', py: 0.25, flexWrap: 'wrap' }}
+                  >
                     {selected.length > 1 && <Chip label={f.resource.ctx} size="small" variant="outlined" />}
                     <Link
                       component="button"

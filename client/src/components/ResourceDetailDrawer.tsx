@@ -14,8 +14,9 @@ import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
+import type { SxProps, Theme } from '@mui/material/styles';
 import { dump as dumpYaml } from 'js-yaml';
-import type { KubeObject } from '@kubus/shared';
+import { gvkForResource, type KubeObject } from '@kubus/shared';
 import { useApplyResource, useDryRunResource, useResource, useResourceEvents } from '../api/queries.js';
 import { withoutManagedFields } from '../kube-display.js';
 import { YamlEditor, useYamlSchema } from './YamlEditor.js';
@@ -26,10 +27,11 @@ import { NodeDetail } from './detail/NodeDetail.js';
 import { ServiceDetail } from './detail/ServiceDetail.js';
 import { SecretDetail } from './detail/SecretDetail.js';
 import { CrdDetail, CrdSchemaDetail, crdVersions } from './detail/CrdDetail.js';
+import { CustomResourceDetail } from './detail/CustomResourceDetail.js';
 import { RolloutHistory } from './detail/RolloutHistory.js';
 import { AgeCell } from './AgeCell.js';
 import { MetricsChart } from './MetricsChart.js';
-import { RowActions } from './RowActions.js';
+import { RowActions, RowLogsButton } from './RowActions.js';
 import { TopologyGraph } from './TopologyGraph.js';
 import { useDetailStore } from '../state/detail.js';
 
@@ -48,15 +50,19 @@ interface Props {
   sel: ResourceSelection | undefined;
   onClose: () => void;
   onBack?: () => void;
+  inline?: boolean;
 }
 
-export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
+export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: Props) {
   const [tab, setTab] = useState('overview');
   const [reveal, setReveal] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
   const pushDetail = useDetailStore((s) => s.push);
-  const isSecret = sel?.kind === 'Secret';
-  const isCrd = sel?.kind === 'CustomResourceDefinition';
+  const registeredKind = sel && gvkForResource(sel.group, sel.version, sel.plural)?.kind;
+  const isCrdResource = sel?.group === 'apiextensions.k8s.io' && sel.version === 'v1' && sel.plural === 'customresourcedefinitions';
+  const behaviorKind = sel && (registeredKind === sel.kind || isCrdResource) ? sel.kind : undefined;
+  const isSecret = behaviorKind === 'Secret';
+  const isCrd = isCrdResource && sel?.kind === 'CustomResourceDefinition';
   const backingCrdSelection = sel?.custom && !isCrd && sel.group
     ? {
         ctx: sel.ctx,
@@ -69,7 +75,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
     : undefined;
 
   // Reset per-resource view state when the selection changes.
-  const selKey = sel ? `${sel.ctx}|${sel.kind}|${sel.namespace ?? ''}|${sel.name}` : '';
+  const selKey = sel ? `${sel.ctx}|${sel.group}|${sel.version}|${sel.plural}|${sel.namespace ?? ''}|${sel.name}` : '';
   useEffect(() => {
     setTab('overview');
     setReveal(false);
@@ -97,15 +103,31 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   );
   const schemaSource = isCrd ? obj : backingCrd;
   const versions = useMemo(() => crdVersions(schemaSource), [schemaSource]);
-  const hasMetrics = sel?.kind === 'Pod' || sel?.kind === 'Node';
-  const hasRolloutHistory = sel?.kind === 'Deployment' || sel?.kind === 'StatefulSet';
+  const hasMetrics = behaviorKind === 'Pod' || behaviorKind === 'Node';
+  const hasRolloutHistory = behaviorKind === 'Deployment' || behaviorKind === 'StatefulSet';
   const showMap = !isCrd;
   const drawerTopOffset = 52;
   const drawerPaperSx = {
     top: `${drawerTopOffset}px`,
     height: `calc(100% - ${drawerTopOffset}px)`,
   };
-  const drawerWidth = fullScreen ? '100vw' : tab === 'map' ? 'min(1060px, 92vw)' : tab.startsWith('crd:') ? 'min(920px, 90vw)' : 'min(720px, 80vw)';
+  const inlinePaperSx: SxProps<Theme> = fullScreen
+    ? {
+        position: 'fixed',
+        top: `${drawerTopOffset}px`,
+        right: 0,
+        bottom: 0,
+        width: '100vw',
+        height: `calc(100% - ${drawerTopOffset}px)`,
+        border: 0,
+        zIndex: (theme) => theme.zIndex.modal,
+      }
+    : { position: 'relative', inset: 0, width: '100%', height: '100%', border: 0, zIndex: 'auto' };
+  const drawerWidth = fullScreen
+    ? '100vw'
+    : tab === 'map'
+      ? 'min(1060px, 92vw)'
+      : 'min(720px, 80vw)';
   const mapNamespaces = sel?.namespace ? [sel.namespace] : [];
 
   const handleApply = async (text: string) => {
@@ -125,11 +147,24 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   return (
     <Drawer
       anchor="right"
-      open={!!sel}
+      variant={inline ? 'permanent' : 'temporary'}
+      open={inline || !!sel}
       onClose={onClose}
+      sx={
+        inline
+          ? {
+              width: '100%',
+              height: '100%',
+              // zIndex auto: embedded in the page flow, the paper must not
+              // keep the drawer's modal-level 1200 or it buries the panel's
+              // collapse/resize handles.
+              '& .MuiDrawer-paper': inlinePaperSx,
+            }
+          : undefined
+      }
       slotProps={{
         backdrop: { invisible: true },
-        paper: { sx: { ...drawerPaperSx, width: drawerWidth, maxWidth: '100vw' } },
+        paper: { sx: inline ? undefined : { ...drawerPaperSx, width: drawerWidth, maxWidth: '100vw' } },
       }}
     >
       {sel && (
@@ -162,7 +197,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
                 {obj && (
                   <>
                     {' · '}
-                    <AgeCell timestamp={obj.metadata.creationTimestamp} /> old
+                    <AgeCell timestamp={obj.metadata.creationTimestamp} variant="caption" /> old
                   </>
                 )}
               </Typography>
@@ -176,13 +211,16 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
               </Typography>
             </Box>
             <Box sx={{ flex: 1 }} />
+            {obj && <RowLogsButton target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
             {obj && <RowActions target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
-            <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
-              <IconButton onClick={() => setFullScreen((v) => !v)} aria-label={fullScreen ? 'Restore drawer' : 'Full screen'}>
-                {fullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
-              </IconButton>
-            </Tooltip>
-            <IconButton onClick={onClose}>
+            {(!inline || tab === 'map') && (
+              <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
+                <IconButton onClick={() => setFullScreen((v) => !v)} aria-label={fullScreen ? 'Restore drawer' : 'Full screen'}>
+                  {fullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+                </IconButton>
+              </Tooltip>
+            )}
+            <IconButton onClick={onClose} aria-label="Close resource details">
               <CloseIcon />
             </IconButton>
           </Stack>
@@ -204,7 +242,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
             {hasRolloutHistory && <Tab value="history" label="History" sx={{ minHeight: 36 }} />}
           </Tabs>
           <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-            {tab === 'overview' && obj && <OverviewForKind kind={sel.kind} obj={obj} ctx={sel.ctx} />}
+            {tab === 'overview' && obj && <OverviewForKind kind={behaviorKind} obj={obj} ctx={sel.ctx} crd={isCrd ? undefined : backingCrd} version={sel.version} />}
             {tab.startsWith('crd:') && schemaSource && <CrdSchemaDetail obj={schemaSource} versionName={tab.slice('crd:'.length)} />}
             {showMap && tab === 'map' && (
               <Box sx={{ height: '100%', p: 1.25 }}>
@@ -244,7 +282,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
             )}
             {tab === 'events' && <EventsList events={events?.items ?? []} />}
             {tab === 'metrics' && hasMetrics && (
-              <MetricsChart ctx={sel.ctx} kind={sel.kind === 'Pod' ? 'pod' : 'node'} name={sel.name} namespace={sel.namespace} />
+              <MetricsChart ctx={sel.ctx} kind={behaviorKind === 'Pod' ? 'pod' : 'node'} name={sel.name} namespace={sel.namespace} />
             )}
             {tab === 'history' && hasRolloutHistory && obj && (
               <RolloutHistory ctx={sel.ctx} kind={sel.kind as 'Deployment' | 'StatefulSet'} obj={obj} />
@@ -256,7 +294,11 @@ export function ResourceDetailDrawer({ sel, onClose, onBack }: Props) {
   );
 }
 
-function OverviewForKind({ kind, obj, ctx }: { kind: string; obj: KubeObject; ctx: string }) {
+export function ResourceDetailPanel(props: Omit<Props, 'inline'>) {
+  return <ResourceDetailDrawer {...props} inline />;
+}
+
+function OverviewForKind({ kind, obj, ctx, crd, version }: { kind: string | undefined; obj: KubeObject; ctx: string; crd?: KubeObject; version: string }) {
   switch (kind) {
     case 'Deployment':
       return <DeploymentDetail obj={obj} ctx={ctx} />;
@@ -271,7 +313,9 @@ function OverviewForKind({ kind, obj, ctx }: { kind: string; obj: KubeObject; ct
     case 'CustomResourceDefinition':
       return <CrdDetail obj={obj} ctx={ctx} />;
     default:
-      return <GenericDetail obj={obj} ctx={ctx} />;
+      // Custom resources with their backing CRD loaded get a status-aware
+      // overview driven by the CRD's printer columns.
+      return crd ? <CustomResourceDetail obj={obj} ctx={ctx} crd={crd} version={version} /> : <GenericDetail obj={obj} ctx={ctx} />;
   }
 }
 

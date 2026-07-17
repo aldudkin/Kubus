@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePaneActive } from '../layout/pane-context.js';
 import type {
+  ClusterMetricsSummary,
   ClusterOverview,
   ContextInfo,
   HelmReleaseDetail,
@@ -10,7 +12,15 @@ import type {
   LogTargetKind,
   LogTargetPodsResponse,
   MetricsHistoryResponse,
+  MetricsServerInstallRequest,
+  MetricsServerInstallResult,
+  MetricsServerStatus,
+  MetricsServerUninstallResult,
   MetricsSnapshot,
+  ClusterNetworkSummary,
+  NetworkAgentInstallResult,
+  NetworkAgentStatus,
+  NetworkAgentUninstallResult,
   PortForwardInfo,
   PortForwardRequest,
   ResourceKindInfo,
@@ -131,6 +141,19 @@ export function useEditCluster() {
         body: JSON.stringify(body),
       }),
     onSuccess: (contexts) => {
+      qc.setQueryData(['contexts'], contexts);
+      void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
+    },
+  });
+}
+
+/** Remove a context (and its unshared cluster/user entries) from the kubeconfig. */
+export function useDeleteCluster() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ctx: string) => apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}`, { method: 'DELETE' }),
+    onSuccess: (contexts, ctx) => {
+      useClustersStore.getState().removeContext(ctx);
       qc.setQueryData(['contexts'], contexts);
       void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
     },
@@ -302,21 +325,56 @@ export function useWatchedList(contexts: string[], group: string, version: strin
   const [state, setState] = useState<WatchedListState>({ rows: [], status: {} });
   // Per-ctx object maps live in a ref; state is derived on each change.
   const mapsRef = useRef(new Map<string, Map<string, KubeObject>>());
+  // Hidden panes keep their subscriptions (the maps stay current) but defer
+  // the React commit: at scale every 100 ms watch flush would otherwise
+  // re-render a full DataGrid per hidden pane. On reveal the pending rebuild
+  // runs once, so revealed tabs are fresh within one commit.
+  const paneActive = usePaneActive();
+  const paneActiveRef = useRef(paneActive);
+  paneActiveRef.current = paneActive;
+  const pendingRef = useRef(false);
 
   const key = `${contexts.join(',')}|${group}/${version}/${plural}`;
+
+  const rebuild = useCallback(() => {
+    const rows: ClusterRow[] = [];
+    for (const [ctx, objects] of mapsRef.current) {
+      for (const obj of objects.values()) rows.push({ ctx, obj });
+    }
+    setState((prev) => {
+      if (prev.rows.length === rows.length && prev.rows.every((r, i) => r.obj === rows[i]!.obj && r.ctx === rows[i]!.ctx)) return prev;
+      return { rows, status: prev.status };
+    });
+  }, []);
+
+  const commit = useCallback(() => {
+    if (!paneActiveRef.current) {
+      pendingRef.current = true;
+      return;
+    }
+    rebuild();
+  }, [rebuild]);
+
+  useEffect(() => {
+    if (paneActive && pendingRef.current) {
+      pendingRef.current = false;
+      rebuild();
+    }
+  }, [paneActive, rebuild]);
 
   useEffect(() => {
     const maps = mapsRef.current;
     maps.clear();
-    setState({ rows: [], status: Object.fromEntries(contexts.map((c) => [c, { state: 'loading' as const }])) });
-
-    const rebuild = () => {
-      const rows: ClusterRow[] = [];
-      for (const [ctx, objects] of maps) {
-        for (const obj of objects.values()) rows.push({ ctx, obj });
-      }
-      setState((prev) => ({ rows, status: prev.status }));
-    };
+    // Keep previous rows and per-ctx status objects: on resubscribe the watch
+    // client usually replays a cached snapshot synchronously (same commit),
+    // and every setter below bails out on identical content, so a kept-alive
+    // tab pane being revealed causes zero state churn (and no grid re-render).
+    // When there is no cache, stale rows beat a blank grid until the fresh
+    // snapshot lands.
+    setState((prev) => ({
+      rows: prev.rows,
+      status: Object.fromEntries(contexts.map((c) => [c, prev.status[c] ?? { state: 'loading' as const }])),
+    }));
 
     const unsubs = contexts.map((ctx) => {
       const objects = new Map<string, KubeObject>();
@@ -327,17 +385,21 @@ export function useWatchedList(contexts: string[], group: string, version: strin
           onSnapshot: (items) => {
             objects.clear();
             for (const item of items) objects.set(item.metadata.uid, item);
-            rebuild();
+            commit();
           },
           onEvents: (events) => {
             for (const ev of events) {
               if (ev.type === 'DELETED') objects.delete(ev.object.metadata.uid);
               else objects.set(ev.object.metadata.uid, ev.object);
             }
-            rebuild();
+            commit();
           },
           onStatus: (s, message) => {
-            setState((prev) => ({ rows: prev.rows, status: { ...prev.status, [ctx]: { state: s, message } } }));
+            setState((prev) => {
+              const cur = prev.status[ctx];
+              if (cur && cur.state === s && cur.message === message) return prev;
+              return { rows: prev.rows, status: { ...prev.status, [ctx]: { state: s, message } } };
+            });
           },
         },
       );
@@ -346,7 +408,7 @@ export function useWatchedList(contexts: string[], group: string, version: strin
       for (const unsub of unsubs) unsub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, commit]);
 
   return state;
 }
@@ -671,6 +733,98 @@ export function useMetricsHistory(sel: { ctx: string; kind: 'pod' | 'node'; name
   });
 }
 
+export function useMetricsSummary(ctx: string) {
+  return useQuery({
+    queryKey: ['metrics-summary', ctx],
+    queryFn: () => apiFetch<ClusterMetricsSummary>(`/api/contexts/${encodeURIComponent(ctx)}/metrics/summary`),
+    refetchInterval: useRefetchInterval(20_000),
+    placeholderData: keepPreviousData,
+  });
+}
+
+// ---- metrics-server install / uninstall ----
+
+export function useMetricsServerStatus(ctx: string, opts?: { refetchMs?: number }) {
+  return useQuery({
+    queryKey: ['metrics-server-status', ctx],
+    queryFn: () => apiFetch<MetricsServerStatus>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server`),
+    refetchInterval: useRefetchInterval(opts?.refetchMs ?? 30_000),
+    retry: false,
+  });
+}
+
+function invalidateMetricsServer(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: ['metrics-server-status'] });
+  void qc.invalidateQueries({ queryKey: ['metrics-summary'] });
+  void qc.invalidateQueries({ queryKey: ['metrics-nodes'] });
+  void qc.invalidateQueries({ queryKey: ['metrics-snapshot'] });
+}
+
+export function useInstallMetricsServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ctx, body }: { ctx: string; body: MetricsServerInstallRequest }) =>
+      apiFetch<MetricsServerInstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server/install`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => invalidateMetricsServer(qc),
+  });
+}
+
+export function useUninstallMetricsServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ctx }: { ctx: string }) =>
+      apiFetch<MetricsServerUninstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server`, { method: 'DELETE' }),
+    onSuccess: () => invalidateMetricsServer(qc),
+  });
+}
+
+// ---- network metrics / network-agent install / uninstall ----
+
+export function useNetworkSummary(ctx: string) {
+  return useQuery({
+    queryKey: ['network-summary', ctx],
+    queryFn: () => apiFetch<ClusterNetworkSummary>(`/api/contexts/${encodeURIComponent(ctx)}/network-metrics/summary`),
+    refetchInterval: useRefetchInterval(20_000),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useNetworkAgentStatus(ctx: string, opts?: { refetchMs?: number }) {
+  return useQuery({
+    queryKey: ['network-agent-status', ctx],
+    queryFn: () => apiFetch<NetworkAgentStatus>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent`),
+    refetchInterval: useRefetchInterval(opts?.refetchMs ?? 30_000),
+    retry: false,
+  });
+}
+
+function invalidateNetworkAgent(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: ['network-agent-status'] });
+  void qc.invalidateQueries({ queryKey: ['network-summary'] });
+}
+
+export function useInstallNetworkAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ctx }: { ctx: string }) =>
+      apiFetch<NetworkAgentInstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent/install`, { method: 'POST' }),
+    onSuccess: () => invalidateNetworkAgent(qc),
+  });
+}
+
+export function useUninstallNetworkAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ctx }: { ctx: string }) =>
+      apiFetch<NetworkAgentUninstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent`, { method: 'DELETE' }),
+    onSuccess: () => invalidateNetworkAgent(qc),
+  });
+}
+
 export function useOverview(ctx: string) {
   return useQuery({
     queryKey: ['overview', ctx],
@@ -733,8 +887,12 @@ export interface TopologyFocus {
   depth?: number;
 }
 
-export function useTopologyGraphs(contexts: string[], namespaces: string[], focus?: TopologyFocus) {
-  return useQuery({
+/**
+ * Shared between useTopologyGraphs and the prefetch in TopologyGraph, which
+ * starts this fetch while the heavy graph chunk is still downloading.
+ */
+export function topologyGraphsOptions(contexts: string[], namespaces: string[], focus?: TopologyFocus) {
+  return queryOptions({
     queryKey: ['topology-graphs', contexts, namespaces, focus],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -754,8 +912,16 @@ export function useTopologyGraphs(contexts: string[], namespaces: string[], focu
       );
       return graphs;
     },
+    staleTime: 15_000,
+  });
+}
+
+export function useTopologyGraphs(contexts: string[], namespaces: string[], focus?: TopologyFocus) {
+  return useQuery({
+    ...topologyGraphsOptions(contexts, namespaces, focus),
     enabled: contexts.length > 0,
     refetchInterval: useRefetchInterval(20_000),
+    placeholderData: keepPreviousData,
   });
 }
 

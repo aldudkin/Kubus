@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { memo, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Tab from '@mui/material/Tab';
@@ -14,7 +14,7 @@ import { clampDockHeight, useDockStore } from '../state/dock.js';
 import { TerminalPane } from '../components/TerminalPane.js';
 import { LogViewer } from '../components/LogViewer.js';
 
-export function BottomDock({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
+export const BottomDock = memo(function BottomDock({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
   const tabs = useDockStore((s) => s.tabs);
   const activeId = useDockStore((s) => s.activeId);
   const open = useDockStore((s) => s.open);
@@ -94,6 +94,13 @@ export function BottomDock({ containerRef }: { containerRef: React.RefObject<HTM
               key={tab.id}
               value={tab.id}
               sx={{ minHeight: 32, py: 0, textTransform: 'none' }}
+              onMouseDown={(e) => {
+                // Prevent Chromium's middle-click autoscroll so onAuxClick fires cleanly.
+                if (e.button === 1) e.preventDefault();
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1) closeTab(tab.id);
+              }}
               label={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                   {tab.kind === 'terminal' || tab.kind === 'node-shell' ? <TerminalIcon sx={{ fontSize: 14 }} /> : <SubjectIcon sx={{ fontSize: 14 }} />}
@@ -134,4 +141,4 @@ export function BottomDock({ containerRef }: { containerRef: React.RefObject<HTM
       </Box>
     </Box>
   );
-}
+});

@@ -5,7 +5,6 @@ import Breadcrumbs from '@mui/material/Breadcrumbs';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import Link from '@mui/material/Link';
-import Snackbar from '@mui/material/Snackbar';
 import Stack from '@mui/material/Stack';
 import Tab from '@mui/material/Tab';
 import Table from '@mui/material/Table';
@@ -27,6 +26,7 @@ import { StatusChip } from '../components/StatusChip.js';
 import { AgeCell } from '../components/AgeCell.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { useIsProtected } from '../state/clusters.js';
+import { showToast } from '../state/toast.js';
 
 export function HelmReleaseDetailPage() {
   const { ctx, ns, name } = useParams<{ ctx: string; ns: string; name: string }>();
@@ -40,7 +40,6 @@ export function HelmReleaseDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [rollbackTo, setRollbackTo] = useState<number | null>(null);
   const [diffRange, setDiffRange] = useState<{ from: number; to: number } | null>(null);
-  const [toast, setToast] = useState<string>();
 
   const valuesYaml = useMemo(() => (release ? dumpYaml(release.values ?? {}, { noRefs: true }) : ''), [release]);
   const computedYaml = useMemo(() => (release ? dumpYaml(release.computedValues ?? {}, { noRefs: true }) : ''), [release]);
@@ -154,12 +153,12 @@ export function HelmReleaseDetailPage() {
             {
               onSuccess: (r) => {
                 setConfirmOpen(false);
-                setToast(`Uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
+                showToast('success', `Uninstalled: ${r.deleted.length} resources deleted${r.failed.length ? `, ${r.failed.length} failed` : ''}`);
                 setTimeout(() => navigate('/helm'), 1200);
               },
               onError: (e) => {
                 setConfirmOpen(false);
-                setToast(`Uninstall failed: ${e.message}`);
+                showToast('error', `Uninstall failed: ${e.message}`);
               },
             },
           )
@@ -185,11 +184,11 @@ export function HelmReleaseDetailPage() {
             {
               onSuccess: (r) => {
                 setRollbackTo(null);
-                setToast(`Rolled back to revision ${rollbackTo} (new revision ${r.newRevision}, ${r.applied.length} applied${r.pruned.length ? `, ${r.pruned.length} pruned` : ''}${r.failed.length ? `, ${r.failed.length} failed` : ''})`);
+                showToast('success', `Rolled back to revision ${rollbackTo} (new revision ${r.newRevision}, ${r.applied.length} applied${r.pruned.length ? `, ${r.pruned.length} pruned` : ''}${r.failed.length ? `, ${r.failed.length} failed` : ''})`);
               },
               onError: (e) => {
                 setRollbackTo(null);
-                setToast(`Rollback failed: ${e.message}`);
+                showToast('error', `Rollback failed: ${e.message}`);
               },
             },
           )
@@ -206,7 +205,6 @@ export function HelmReleaseDetailPage() {
           onClose={() => setDiffRange(null)}
         />
       )}
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(undefined)} message={toast} />
     </Box>
   );
 }

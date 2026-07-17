@@ -15,8 +15,8 @@ import ListItemText from '@mui/material/ListItemText';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
-import Snackbar from '@mui/material/Snackbar';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -34,7 +34,7 @@ import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import BlockIcon from '@mui/icons-material/Block';
 import DownhillSkiingIcon from '@mui/icons-material/DownhillSkiing';
-import type { KubeObject, LogTargetKind } from '@kubus/shared';
+import { gvkForResource, type KubeObject, type LogTargetKind } from '@kubus/shared';
 import {
   resolveLogTargetPods,
   useCordon,
@@ -52,8 +52,9 @@ import {
   useTriggerCronJob,
 } from '../api/queries.js';
 import { watchClient } from '../api/ws/watch-client.js';
-import { useDockStore, dockTabId } from '../state/dock.js';
+import { useDockStore, dockTabId, type DockTab } from '../state/dock.js';
 import { useIsProtected } from '../state/clusters.js';
+import { showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { FileCopyDialog } from './FileCopyDialog.js';
 import { podContainerNames } from '../kube-display.js';
@@ -77,13 +78,74 @@ export interface RowActionMenuProps {
 
 const LOG_TARGET_KINDS = new Set<string>(['Pod', 'Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Service']);
 
-function isLogTargetKind(kind: string): kind is LogTargetKind {
+export function isLogTargetKind(kind: string): kind is LogTargetKind {
   return LOG_TARGET_KINDS.has(kind);
+}
+
+/** Resolve a pod/workload/service to its pods and open one logs dock tab per namespace. */
+async function openLogsForTarget(target: RowActionTarget, addTab: (tab: DockTab) => void): Promise<void> {
+  const { ctx, kind, obj } = target;
+  const actionKind = gvkForResource(target.group, target.version, target.plural)?.kind === kind ? kind : undefined;
+  if (!actionKind || !isLogTargetKind(actionKind)) return;
+  const name = obj.metadata.name;
+  const namespace = obj.metadata.namespace;
+  if (!namespace) throw new Error(`${kind} has no namespace`);
+  const { pods } = await resolveLogTargetPods({ ctx, group: target.group, version: target.version, plural: target.plural, kind: actionKind, namespace, name });
+  if (!pods.length) throw new Error(`No pods found for ${actionKind} ${namespace}/${name}`);
+  const byNamespace = new Map<string, string[]>();
+  for (const pod of pods) {
+    const names = byNamespace.get(pod.namespace);
+    if (names) names.push(pod.name);
+    else byNamespace.set(pod.namespace, [pod.name]);
+  }
+  for (const [ns, podNames] of byNamespace) {
+    addTab({
+      kind: 'logs',
+      id: dockTabId(),
+      title: pods.length === 1 ? `logs: ${podNames[0] ?? name}` : `logs: ${actionKind}/${name}`,
+      ctx,
+      namespace: ns,
+      pods: podNames,
+      follow: true,
+    });
+  }
+}
+
+/** Inline quick action: stream logs without opening the actions menu. Renders nothing for kinds without logs. */
+export function RowLogsButton({ target }: { target: RowActionTarget }) {
+  const addTab = useDockStore((s) => s.addTab);
+  const [busy, setBusy] = useState(false);
+  const actionKind = gvkForResource(target.group, target.version, target.plural)?.kind === target.kind ? target.kind : undefined;
+  if (!actionKind || !isLogTargetKind(actionKind)) return null;
+  return (
+    <Tooltip title="Logs">
+      <span>
+        <IconButton
+          size="small"
+          aria-label={`Logs for ${target.obj.metadata.name}`}
+          disabled={busy}
+          onClick={(e) => {
+            e.stopPropagation();
+            setBusy(true);
+            openLogsForTarget(target, addTab)
+              .catch((err: unknown) => showToast('error', err instanceof Error ? err.message : String(err)))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <SubjectIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
 }
 
 export function RowActions({ target }: { target: RowActionTarget }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [open, setOpen] = useState(false);
 
+  // The menu wires up a dozen mutation hooks and store subscriptions, and one
+  // of these cells renders per visible row — mount it only once actually
+  // opened (anchor stays set through close so the fade-out still plays).
   return (
     <>
       <IconButton
@@ -91,18 +153,18 @@ export function RowActions({ target }: { target: RowActionTarget }) {
         onClick={(e) => {
           e.stopPropagation();
           setAnchor(e.currentTarget);
+          setOpen(true);
         }}
       >
         <MoreVertIcon fontSize="small" />
       </IconButton>
-      <RowActionMenu target={target} anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)} />
+      {anchor && <RowActionMenu target={target} anchorEl={anchor} open={open} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
 export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose }: RowActionMenuProps) {
   const [dialog, setDialog] = useState<'delete' | 'scale' | 'forward' | 'drain' | 'restart-rs' | 'set-image' | 'debug' | 'node-shell' | 'files' | null>(null);
-  const [toast, setToast] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const [logsBusy, setLogsBusy] = useState(false);
 
   const del = useDeleteResource();
@@ -115,55 +177,33 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
   const addTab = useDockStore((s) => s.addTab);
 
   const { kind, obj, ctx } = target;
+  const actionKind = gvkForResource(target.group, target.version, target.plural)?.kind === kind ? kind : undefined;
   const name = obj.metadata.name;
   const namespace = obj.metadata.namespace;
   const isProtected = useIsProtected(ctx);
   const close = onClose;
 
-  const ok = (text: string) => setToast({ severity: 'success', text });
-  const fail = (err: unknown) => setToast({ severity: 'error', text: err instanceof Error ? err.message : String(err) });
+  const ok = (text: string) => showToast('success', text);
+  const fail = (err: unknown) => showToast('error', err instanceof Error ? err.message : String(err));
 
-  const scalable = kind === 'Deployment' || kind === 'StatefulSet' || kind === 'ReplicaSet';
-  const restartable = kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet';
-  const isReplicaSet = kind === 'ReplicaSet';
-  const isPod = kind === 'Pod';
-  const isNode = kind === 'Node';
-  const isCronJob = kind === 'CronJob';
-  const isJob = kind === 'Job';
-  const canForward = isPod || kind === 'Service';
-  const canViewLogs = isLogTargetKind(kind);
+  const scalable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'ReplicaSet';
+  const restartable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'DaemonSet';
+  const isReplicaSet = actionKind === 'ReplicaSet';
+  const isPod = actionKind === 'Pod';
+  const isNode = actionKind === 'Node';
+  const isCronJob = actionKind === 'CronJob';
+  const isJob = actionKind === 'Job';
+  const canForward = isPod || actionKind === 'Service';
+  const canViewLogs = isLogTargetKind(actionKind ?? '');
   const unschedulable = isNode && !!(obj.spec as { unschedulable?: boolean })?.unschedulable;
   const cjSuspended = isCronJob && !!(obj.spec as { suspend?: boolean })?.suspend;
-  const isDeployment = kind === 'Deployment';
+  const isDeployment = actionKind === 'Deployment';
   const rolloutPaused = isDeployment && !!(obj.spec as { paused?: boolean })?.paused;
 
   const openLogs = async () => {
-    if (!isLogTargetKind(kind)) return;
-    if (!namespace) {
-      fail(new Error(`${kind} has no namespace`));
-      return;
-    }
     setLogsBusy(true);
     try {
-      const { pods } = await resolveLogTargetPods({ ctx, group: target.group, version: target.version, plural: target.plural, kind, namespace, name });
-      if (!pods.length) throw new Error(`No pods found for ${kind} ${namespace}/${name}`);
-      const byNamespace = new Map<string, string[]>();
-      for (const pod of pods) {
-        const names = byNamespace.get(pod.namespace);
-        if (names) names.push(pod.name);
-        else byNamespace.set(pod.namespace, [pod.name]);
-      }
-      for (const [ns, podNames] of byNamespace) {
-        addTab({
-          kind: 'logs',
-          id: dockTabId(),
-          title: pods.length === 1 ? `logs: ${podNames[0] ?? name}` : `logs: ${kind}/${name}`,
-          ctx,
-          namespace: ns,
-          pods: podNames,
-          follow: true,
-        });
-      }
+      await openLogsForTarget(target, addTab);
     } catch (err) {
       fail(err);
     } finally {
@@ -501,12 +541,6 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
       {dialog === 'set-image' && <SetImageDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'forward' && <PortForwardDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'drain' && <DrainDialog target={target} onClose={() => setDialog(null)} />}
-
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-          {toast?.text}
-        </Alert>
-      </Snackbar>
     </>
   );
 }

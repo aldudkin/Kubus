@@ -11,20 +11,11 @@ import type { ClusterRow } from '../api/queries.js';
 import { matchesPlainText, matchesSmartFilter, parseSmartFilter } from '../smart-filter.js';
 import { joinLabelSelector, splitLabelSelector } from '../label-selector.js';
 import { SmartFilterInput } from './SmartFilterInput.js';
+import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from './CellCopy.js';
 import type { MetricsLookup } from './columns.js';
 import { useUiPrefsStore } from '../state/prefs.js';
-
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return (
-    target.isContentEditable ||
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    !!target.closest('[contenteditable="true"], [role="textbox"], [role="dialog"], [role="menu"], [role="listbox"], .monaco-editor')
-  );
-}
+import { isTextEntryTarget } from '../text-entry.js';
+import { usePaneActive } from '../layout/pane-context.js';
 
 interface Props {
   rows: ClusterRow[];
@@ -50,6 +41,8 @@ interface Props {
   hiddenFields?: string[];
   /** Stable id used to persist user-resized column widths for this table. */
   tableId?: string;
+  /** Row emphasized as the resource currently shown in an adjacent detail view. */
+  activeRowId?: string;
 }
 
 const labelFilterOptions = createFilterOptions<string>({ limit: 100 });
@@ -85,6 +78,7 @@ export function ResourceTable({
   onSelectionChange,
   hiddenFields,
   tableId,
+  activeRowId,
 }: Props) {
   const [localFilter, setLocalFilter] = useState('');
   // The committed value lives in the URL (or localFilter); the input itself is
@@ -106,55 +100,79 @@ export function ResourceTable({
   useEffect(() => () => clearTimeout(commitTimer.current), []);
 
   const hiddenKey = (hiddenFields ?? []).join(',');
-  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>({});
+  const visibilityFromHidden = () => Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
+  // A saved model wins over the default-hidden set; without one, visibility
+  // starts from (and resets with) the defaults.
+  const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
+  const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
+  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(() => storedVisibility ?? visibilityFromHidden());
+  // Re-seed visibility when this instance is reused for another table (same
+  // route, different kind — tableId changes) or when the default-hidden set
+  // changes, without paying an extra effect-driven render pass.
+  const visibilityKey = `${tableId ?? ''}|${hiddenKey}`;
+  const [prevVisibilityKey, setPrevVisibilityKey] = useState(visibilityKey);
+  if (prevVisibilityKey !== visibilityKey) {
+    setPrevVisibilityKey(visibilityKey);
+    setVisibility(storedVisibility ?? visibilityFromHidden());
+  }
+  const handleVisibilityChange = useCallback(
+    (model: GridColumnVisibilityModel) => {
+      setVisibility(model);
+      if (tableId) setStoredVisibility(tableId, model);
+    },
+    [tableId, setStoredVisibility],
+  );
   const tableDensity = useUiPrefsStore((s) => s.tableDensity);
   // Retrieve this table's saved column widths (if any)
   const storedWidths = useUiPrefsStore((s) => (tableId ? s.columnWidths[tableId] : undefined));
   // Retrieve the action used to persist a column width
   const setColumnWidth = useUiPrefsStore((s) => s.setColumnWidth);
-  useEffect(() => {
-    setVisibility(Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []));
-  }, [hiddenKey]);
 
-  // Check the watchlist and rebuild the columns upon detected changes
+  // The copy-button wrapper is cached per column def so columns whose def did
+  // not change keep their identity across rebuilds (metrics polls swap only
+  // the metric columns) — the grid then skips re-rendering unchanged cells.
+  const wrappedColumnsRef = useRef(new WeakMap<GridColDef<ClusterRow>, { width: number | undefined; wrapped: GridColDef<ClusterRow> }>());
   const gridColumns = useMemo(() => {
-    const result: GridColDef<ClusterRow>[] = [];
-    for (const column of columns) {
-      let next = column;
-      let stored;
-      if (storedWidths) {
-        stored = storedWidths[column.field];
+    const cache = wrappedColumnsRef.current;
+    return columns.map((column) => {
+      const stored = storedWidths?.[column.field];
+      let entry = cache.get(column);
+      if (!entry || entry.width !== stored) {
+        // If a saved width exists, apply it on a copy of the column.
+        const base = stored !== undefined ? { ...column, width: stored, flex: undefined } : column;
+        // Adds the hover copy button and sets flex display on every column.
+        entry = { width: stored, wrapped: withCellCopy(base) };
+        cache.set(column, entry);
       }
-      // If a saved width exists, make a copy of the column with that width applied
-      if (stored !== undefined) {
-        next = { ...next, width: stored, flex: undefined };
-      }
-      // If this column draws custom cells, make sure they lay out correctly
-      if (next.renderCell && !next.display) {
-        next = { ...next, display: 'flex' as const };
-      }
-      result.push(next);
-    }
-
-    // Hand back the whole adjusted list.
-    return result;
-  }, [columns, storedWidths]); // watch list
+      return entry.wrapped;
+    });
+  }, [columns, storedWidths]);
 
   // Filter on the deferred value so keystrokes render before the table does.
   const deferredFilter = useDeferredValue(inputValue);
-  const filtered = useMemo(() => {
+  const parsedFilter = useMemo(() => {
     const query = deferredFilter.trim();
-    if (!query) return rows;
-    const resourceKind = kind ?? 'Resource';
+    if (!query) return undefined;
     if (query.startsWith('/')) {
       const clauses = parseSmartFilter(query.slice(1));
-      if (!clauses.length) return rows;
-      const ctx = { kind: resourceKind, metrics: metricsLookup, nowMs: Date.now() };
+      if (!clauses.length) return undefined;
+      return { clauses, usesMetrics: clauses.some((c) => c.key === 'cpu' || c.key === 'mem' || c.key === 'memory') };
+    }
+    return { words: query.toLowerCase().split(/\s+/).filter(Boolean) };
+  }, [deferredFilter]);
+  // Metrics snapshots refresh on a poll; only re-filter for them when a
+  // cpu/mem clause actually reads metrics.
+  const metricsForFilter = parsedFilter?.usesMetrics ? metricsLookup : undefined;
+  const filtered = useMemo(() => {
+    if (!parsedFilter) return rows;
+    const resourceKind = kind ?? 'Resource';
+    const { clauses, words } = parsedFilter;
+    if (clauses) {
+      const ctx = { kind: resourceKind, metrics: metricsForFilter, nowMs: Date.now() };
       return rows.filter((r) => matchesSmartFilter(r, clauses, ctx));
     }
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return rows.filter((r) => matchesPlainText(r, words, resourceKind));
-  }, [rows, deferredFilter, kind, metricsLookup]);
+    return rows.filter((r) => matchesPlainText(r, words ?? [], resourceKind));
+  }, [rows, parsedFilter, kind, metricsForFilter]);
 
   const rowsById = useMemo(() => new Map(filtered.map((row) => [row.obj.metadata.uid, row])), [filtered]);
   const labelOptions = useMemo(() => labelSelectorOptions(rows), [rows]);
@@ -177,7 +195,11 @@ export function ResourceTable({
     });
   }, []);
 
+  // Tables in hidden tab panes stay mounted; only the visible one may own the
+  // global find/quick-search shortcuts (N listeners would also race focus).
+  const paneActive = usePaneActive();
   useEffect(() => {
+    if (!paneActive) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isTextEntryTarget(event.target)) return;
       const key = event.key.toLowerCase();
@@ -191,11 +213,11 @@ export function ResourceTable({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusSearch]);
+  }, [focusSearch, paneActive]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={1} sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center' }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
         <SmartFilterInput
           value={inputValue}
           onChange={setTextFilter}
@@ -250,7 +272,13 @@ export function ResourceTable({
         columns={gridColumns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
+        getRowClassName={(params) => (params.id === activeRowId ? 'kubus-active-resource-row' : '')}
         density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
+        // On overlay-scrollbar platforms the grid measures the native
+        // scrollbar as 0px and floats its own on top of the last column;
+        // an explicit size (matching the themed 10px scrollbars) makes it
+        // reserve a real gutter instead.
+        scrollbarSize={10}
         checkboxSelection={checkboxSelection}
         onRowSelectionModelChange={
           onSelectionChange
@@ -278,15 +306,21 @@ export function ResourceTable({
             : undefined
         }
         columnVisibilityModel={visibility}
-        onColumnVisibilityModelChange={setVisibility}
+        onColumnVisibilityModelChange={handleVisibilityChange}
         onColumnWidthChange={tableId ? (params) => setColumnWidth(tableId, params.colDef.field, params.width) : undefined}
+        onCellKeyDown={handleCopyCellKeyDown}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
         sx={{
           border: 0,
           flex: 1,
           minHeight: 0,
           '& .MuiDataGrid-row': { cursor: onRowClick ? 'pointer' : 'default' },
+          '& .MuiDataGrid-row.kubus-active-resource-row': {
+            bgcolor: 'action.selected',
+            '&:hover': { bgcolor: 'action.selected' },
+          },
           '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
+          ...copyCellGridSx,
         }}
       />
     </Box>

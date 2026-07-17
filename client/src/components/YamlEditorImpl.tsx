@@ -7,6 +7,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import Editor from '@monaco-editor/react';
 import { useTheme } from '@mui/material/styles';
 import type { ResourceDryRunResponse } from '@kubus/shared';
+import { copyToClipboard } from '../clipboard.js';
 import { newYamlModelPath } from '../monaco-setup.js';
 import { useUiPrefsStore } from '../state/prefs.js';
 import { useYamlSchema, type YamlEditorProps } from './YamlEditor.js';
@@ -49,14 +50,13 @@ export default function YamlEditorImpl({ value, readOnly, onApply, onDryRun, app
 
   const copyYaml = async () => {
     setError(undefined);
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
+    const ok = await copyToClipboard(text);
+    setCopied(ok);
+    if (ok) {
       if (copyResetRef.current) window.clearTimeout(copyResetRef.current);
       copyResetRef.current = window.setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      setCopied(false);
-      setError(err instanceof Error ? err.message : String(err));
+    } else {
+      setError('Copy to clipboard failed');
     }
   };
 

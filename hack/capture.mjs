@@ -88,6 +88,22 @@ add('metrics', async () => {
   await page.context().close();
 });
 
+add('cluster-metrics', async () => {
+  const page = await newPage(['kind-kubus-a'], []);
+  await nav(page, 'Metrics');
+  await page.waitForTimeout(3500);
+  await shot(page, 'cluster-metrics');
+  await page.context().close();
+});
+
+add('network-metrics', async () => {
+  const page = await newPage(['kind-kubus-a'], []);
+  await nav(page, 'Network Metrics');
+  await page.waitForTimeout(3500);
+  await shot(page, 'network-metrics');
+  await page.context().close();
+});
+
 add('rollout-history', async () => {
   const page = await newPage(['kind-kubus-a'], ['demo']);
   await nav(page, 'Deployments');
@@ -166,7 +182,9 @@ add('shell', async () => {
   await page.waitForTimeout(600);
   await page.keyboard.type('podinfo', { delay: 45 });
   await page.waitForTimeout(1200);
-  await page.keyboard.press('ArrowDown'); // move to a pod
+  // results order: Deployment, Service, then the pods — two steps to the first Pod
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Tab');
   await page.waitForTimeout(700);
   await page.keyboard.type('shell', { delay: 45 });
@@ -266,7 +284,7 @@ add('production-guard', async () => {
   await page.waitForTimeout(2000);
   await page.keyboard.press('Escape'); // close the auto-opened detail drawer so row actions are reachable
   await page.waitForTimeout(900);
-  const row = page.locator('[role="row"]', { hasText: 'bravo' }).first();
+  const row = page.locator('[role="row"]', { hasText: 'canary' }).first();
   await row.hover();
   await row.getByRole('button').last().click();
   await page.waitForTimeout(600);

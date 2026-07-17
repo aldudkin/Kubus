@@ -10,8 +10,9 @@ import type { ClusterRow } from '../api/queries.js';
 import { AgeCell } from './AgeCell.js';
 import { ReadyCounter } from './ReadyCounter.js';
 import { StatusChip } from './StatusChip.js';
-import { formatBytes, formatCpu } from './Sparkline.js';
-import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podSummary, servicePorts, workloadReady } from '../kube-display.js';
+import { formatBytes, formatCpu } from './format.js';
+import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podRequestTotals, podSummary, serviceLoadBalancerAddresses, servicePorts, statusLikeName, workloadReady } from '../kube-display.js';
+import { UsageMeter } from './UsageMeter.js';
 
 export type MetricsLookup = (ctx: string, namespace: string | undefined, name: string) => { cpuMilli: number; memBytes: number; cpuCapacityMilli?: number; memCapacityBytes?: number } | undefined;
 export type NodeAllocationLookup = (ctx: string, nodeName: string) => NodeAllocationSummary;
@@ -37,27 +38,12 @@ function obj(row: ClusterRow): KubeObject {
   return row.obj;
 }
 
-const podSummaryCache = new WeakMap<KubeObject, ReturnType<typeof podSummary>>();
-
-function cachedPodSummary(o: KubeObject): ReturnType<typeof podSummary> {
-  let summary = podSummaryCache.get(o);
-  if (!summary) {
-    summary = podSummary(o);
-    podSummaryCache.set(o, summary);
-  }
-  return summary;
-}
-
-const eventFieldsCache = new WeakMap<KubeObject, ReturnType<typeof eventFields>>();
-
-function cachedEventFields(o: KubeObject): ReturnType<typeof eventFields> {
-  let fields = eventFieldsCache.get(o);
-  if (!fields) {
-    fields = eventFields(o);
-    eventFieldsCache.set(o, fields);
-  }
-  return fields;
-}
+/**
+ * Column ids whose defs close over the live metrics/allocation lookups.
+ * Callers build these separately from the static columns so a metrics poll
+ * swaps only these defs instead of invalidating the whole column set.
+ */
+export const METRIC_COLUMN_IDS = new Set(['cpu', 'memory', 'nodePods', 'nodeCpuUsage', 'nodeMemoryUsage', 'nodeCpuAllocation', 'nodeMemoryAllocation']);
 
 /** Build DataGrid column definitions from semantic column ids. */
 export function buildColumns(columnIds: string[], opts: ColumnBuildOptions): Col[] {
@@ -74,7 +60,8 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
   labels: (opts) => ({
     field: 'labels',
     headerName: 'Labels',
-    width: 220,
+    flex: 1,
+    minWidth: 220,
     sortable: false,
     valueGetter: (_v, row) =>
       Object.entries(obj(row).metadata.labels ?? {})
@@ -112,17 +99,17 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     field: 'ready',
     headerName: 'Ready',
     width: 75,
-    valueGetter: (_v, row) => cachedPodSummary(obj(row)).ready,
+    valueGetter: (_v, row) => podSummary(obj(row)).ready,
     renderCell: (params) => <ReadyCounter value={String(params.value ?? '')} />,
   }),
   podStatus: () => ({
     field: 'podStatus',
     headerName: 'Status',
     width: 150,
-    valueGetter: (_v, row) => cachedPodSummary(obj(row)).status,
+    valueGetter: (_v, row) => podSummary(obj(row)).status,
     renderCell: (params) => (
       <>
-        <StatusChip status={cachedPodSummary(obj(params.row)).status} />
+        <StatusChip status={podSummary(obj(params.row)).status} />
         {hasRunningDebugContainer(obj(params.row)) && (
           <Tooltip title="A debug container is running in this pod">
             <BugReportOutlinedIcon color="warning" sx={{ fontSize: 15, ml: 0.5, verticalAlign: 'middle' }} />
@@ -136,34 +123,44 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     headerName: 'Restarts',
     width: 80,
     type: 'number',
-    valueGetter: (_v, row) => cachedPodSummary(obj(row)).restarts,
+    valueGetter: (_v, row) => podSummary(obj(row)).restarts,
   }),
   node: () => ({
     field: 'node',
     headerName: 'Node',
     width: 150,
-    valueGetter: (_v, row) => cachedPodSummary(obj(row)).node ?? '',
+    valueGetter: (_v, row) => podSummary(obj(row)).node ?? '',
   }),
   cpu: (opts) => ({
     field: 'cpu',
     headerName: 'CPU',
-    width: 90,
+    width: 120,
     type: 'number',
+    headerAlign: 'left',
+    align: 'left',
     valueGetter: (_v, row) => opts.metrics?.(row.ctx, obj(row).metadata.namespace, obj(row).metadata.name)?.cpuMilli ?? null,
     renderCell: (params) => {
       const m = opts.metrics?.(params.row.ctx, obj(params.row).metadata.namespace, obj(params.row).metadata.name);
-      return m ? formatCpu(m.cpuMilli) : '—';
+      if (!m) return '—';
+      // Workload lookups carry summed pod requests as capacity; Pod rows
+      // read requests off their own spec.
+      const max = m.cpuCapacityMilli ?? (podRequestTotals(obj(params.row)).cpuMilli || undefined);
+      return <UsageMeter value={m.cpuMilli} max={max} format={formatCpu} placeholder emptyHint="no CPU requests set" />;
     },
   }),
   memory: (opts) => ({
     field: 'memory',
     headerName: 'Memory',
-    width: 90,
+    width: 135,
     type: 'number',
+    headerAlign: 'left',
+    align: 'left',
     valueGetter: (_v, row) => opts.metrics?.(row.ctx, obj(row).metadata.namespace, obj(row).metadata.name)?.memBytes ?? null,
     renderCell: (params) => {
       const m = opts.metrics?.(params.row.ctx, obj(params.row).metadata.namespace, obj(params.row).metadata.name);
-      return m ? formatBytes(m.memBytes) : '—';
+      if (!m) return '—';
+      const max = m.memCapacityBytes ?? (podRequestTotals(obj(params.row)).memoryBytes || undefined);
+      return <UsageMeter value={m.memBytes} max={max} format={formatBytes} placeholder emptyHint="no memory requests set" />;
     },
   }),
   nodePods: (opts) => ({
@@ -333,6 +330,12 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     width: 120,
     valueGetter: (_v, row) => (obj(row).spec as { clusterIP?: string })?.clusterIP ?? '',
   }),
+  svcLoadBalancerIP: () => ({
+    field: 'svcLoadBalancerIP',
+    headerName: 'Load Balancer IP',
+    width: 150,
+    valueGetter: (_v, row) => serviceLoadBalancerAddresses(obj(row)),
+  }),
   svcPorts: () => ({
     field: 'svcPorts',
     headerName: 'Ports',
@@ -487,41 +490,41 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     field: 'eventType',
     headerName: 'Type',
     width: 90,
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).type,
-    renderCell: (params) => <StatusChip status={cachedEventFields(obj(params.row)).type === 'Warning' ? 'Error' : 'Ready'} />,
+    valueGetter: (_v, row) => eventFields(obj(row)).type,
+    renderCell: (params) => <StatusChip status={eventFields(obj(params.row)).type === 'Warning' ? 'Error' : 'Ready'} />,
   }),
   eventReason: () => ({
     field: 'eventReason',
     headerName: 'Reason',
     width: 140,
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).reason,
+    valueGetter: (_v, row) => eventFields(obj(row)).reason,
   }),
   eventObject: () => ({
     field: 'eventObject',
     headerName: 'Object',
     width: 220,
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).object,
+    valueGetter: (_v, row) => eventFields(obj(row)).object,
   }),
   eventMessage: () => ({
     field: 'eventMessage',
     headerName: 'Message',
     flex: 2,
     minWidth: 240,
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).message,
+    valueGetter: (_v, row) => eventFields(obj(row)).message,
   }),
   eventCount: () => ({
     field: 'eventCount',
     headerName: 'Count',
     width: 70,
     type: 'number',
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).count,
+    valueGetter: (_v, row) => eventFields(obj(row)).count,
   }),
   eventLastSeen: () => ({
     field: 'eventLastSeen',
     headerName: 'Last seen',
     width: 95,
-    valueGetter: (_v, row) => cachedEventFields(obj(row)).lastSeen ?? '',
-    renderCell: (params) => <AgeCell timestamp={cachedEventFields(obj(params.row)).lastSeen} />,
+    valueGetter: (_v, row) => eventFields(obj(row)).lastSeen ?? '',
+    renderCell: (params) => <AgeCell timestamp={eventFields(obj(params.row)).lastSeen} />,
   }),
   hpaTarget: () => ({
     field: 'hpaTarget',
@@ -652,20 +655,40 @@ function RatioBarCell({ value, label }: { value?: number; label?: string }) {
   );
 }
 
-function nodeAllocatable(node: KubeObject, key: string): string | undefined {
-  return (node.status as { allocatable?: Record<string, string> } | undefined)?.allocatable?.[key];
+interface NodeAllocatable {
+  cpuMilli: number;
+  memoryBytes: number;
+  pods: number;
+}
+
+// Five node columns each parse allocatable quantities in both valueGetter and
+// renderCell; cache per object so a row parses its quantities once.
+const nodeAllocatableCache = new WeakMap<KubeObject, NodeAllocatable>();
+
+function nodeAllocatable(node: KubeObject): NodeAllocatable {
+  let alloc = nodeAllocatableCache.get(node);
+  if (!alloc) {
+    const raw = (node.status as { allocatable?: Record<string, string> } | undefined)?.allocatable;
+    alloc = {
+      cpuMilli: Math.round(parseQuantity(raw?.cpu) * 1000),
+      memoryBytes: Math.round(parseQuantity(raw?.memory)),
+      pods: Math.round(parseQuantity(raw?.pods)),
+    };
+    nodeAllocatableCache.set(node, alloc);
+  }
+  return alloc;
 }
 
 function nodeAllocatableCpuMilli(node: KubeObject): number {
-  return Math.round(parseQuantity(nodeAllocatable(node, 'cpu')) * 1000);
+  return nodeAllocatable(node).cpuMilli;
 }
 
 function nodeAllocatableMemoryBytes(node: KubeObject): number {
-  return Math.round(parseQuantity(nodeAllocatable(node, 'memory')));
+  return nodeAllocatable(node).memoryBytes;
 }
 
 function nodeAllocatablePods(node: KubeObject): number {
-  return Math.round(parseQuantity(nodeAllocatable(node, 'pods')));
+  return nodeAllocatable(node).pods;
 }
 
 function podNodeName(pod: KubeObject): string | undefined {
@@ -679,58 +702,6 @@ function isTerminalPod(pod: KubeObject): boolean {
 
 function isDaemonSetPod(pod: KubeObject): boolean {
   return (pod.metadata.ownerReferences ?? []).some((owner) => owner.kind === 'DaemonSet');
-}
-
-interface ContainerWithRequests {
-  restartPolicy?: string;
-  resources?: { requests?: Record<string, string> };
-}
-
-function podRequestTotals(pod: KubeObject): { cpuMilli: number; memoryBytes: number } {
-  const spec = pod.spec as
-    | {
-        containers?: ContainerWithRequests[];
-        initContainers?: ContainerWithRequests[];
-        overhead?: Record<string, string>;
-      }
-    | undefined;
-  const containers = spec?.containers ?? [];
-  const initContainers = spec?.initContainers ?? [];
-  let appCpu = 0;
-  let appMemory = 0;
-  for (const c of containers) {
-    appCpu += parseCpuRequest(c);
-    appMemory += parseMemoryRequest(c);
-  }
-  let sidecarCpu = 0;
-  let sidecarMemory = 0;
-  let initCpu = 0;
-  let initMemory = 0;
-  for (const c of initContainers) {
-    if (isRestartableInitContainer(c)) {
-      sidecarCpu += parseCpuRequest(c);
-      sidecarMemory += parseMemoryRequest(c);
-    } else {
-      initCpu = Math.max(initCpu, parseCpuRequest(c));
-      initMemory = Math.max(initMemory, parseMemoryRequest(c));
-    }
-  }
-  return {
-    cpuMilli: sidecarCpu + Math.max(appCpu, initCpu) + Math.round(parseQuantity(spec?.overhead?.cpu) * 1000),
-    memoryBytes: sidecarMemory + Math.max(appMemory, initMemory) + Math.round(parseQuantity(spec?.overhead?.memory)),
-  };
-}
-
-function isRestartableInitContainer(container: ContainerWithRequests): boolean {
-  return container.restartPolicy === 'Always';
-}
-
-function parseCpuRequest(container: ContainerWithRequests): number {
-  return Math.round(parseQuantity(container.resources?.requests?.cpu) * 1000);
-}
-
-function parseMemoryRequest(container: ContainerWithRequests): number {
-  return Math.round(parseQuantity(container.resources?.requests?.memory));
 }
 
 export function makeNodeAllocationLookup(pods: ClusterRow[]): NodeAllocationLookup {
@@ -761,7 +732,16 @@ export function makeNodeAllocationLookup(pods: ClusterRow[]): NodeAllocationLook
 export function buildCrdColumns(cols: PrinterColumn[]): Col[] {
   return cols.map((c, i): Col => {
     const numeric = c.type === 'integer' || c.type === 'number';
-    const value = (row: ClusterRow): unknown => evalPrinterColumnPath(row.obj, c.jsonPath);
+    const statusLike = statusLikeName(c.name);
+    // The JSONPath walk runs in valueGetter and again in renderCell, per row
+    // per grid pass; cache per object identity (watch updates replace objects).
+    const valueCache = new WeakMap<KubeObject, unknown>();
+    const value = (row: ClusterRow): unknown => {
+      if (valueCache.has(row.obj)) return valueCache.get(row.obj);
+      const v = evalPrinterColumnPath(row.obj, c.jsonPath);
+      valueCache.set(row.obj, v);
+      return v;
+    };
     return {
       field: `crd_${i}_${c.name}`,
       headerName: c.name,
@@ -773,9 +753,16 @@ export function buildCrdColumns(cols: PrinterColumn[]): Col[] {
         if (v === undefined) return numeric ? null : '';
         if (numeric) return typeof v === 'number' ? v : Number(v);
         if (typeof v === 'object') return JSON.stringify(v).slice(0, 200);
-        return String(v);
+        if (typeof v === 'string') return v;
+        if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+        return '';
       },
-      renderCell: c.type === 'date' ? (params) => <AgeCell timestamp={(value(params.row) as string | undefined) || undefined} /> : undefined,
+      renderCell:
+        c.type === 'date'
+          ? (params) => <AgeCell timestamp={(value(params.row) as string | undefined) || undefined} />
+          : statusLike
+            ? (params) => <StatusChip status={String(params.value ?? '')} />
+            : undefined,
     };
   });
 }
@@ -783,6 +770,58 @@ export function buildCrdColumns(cols: PrinterColumn[]): Col[] {
 /** Default-hidden fields for CRD columns marked priority > 0. */
 export function crdHiddenFields(cols: PrinterColumn[]): string[] {
   return cols.flatMap((c, i) => ((c.priority ?? 0) > 0 ? [`crd_${i}_${c.name}`] : []));
+}
+
+/** Kinds whose list CPU/Memory columns aggregate the usage of their pods. */
+export const WORKLOAD_METRIC_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet']);
+
+/**
+ * Aggregate per-pod usage up to the owning workload so Deployment/StatefulSet/
+ * DaemonSet/ReplicaSet lists can show CPU/Memory. Pods are attributed via
+ * their controller ownerReference; Deployment pods are owned by a ReplicaSet
+ * named `<deployment>-<pod-template-hash>`, so the Deployment name is
+ * recovered by stripping that suffix.
+ */
+export function makeWorkloadMetricsLookup(kind: string, pods: ClusterRow[], metrics: Map<string, MetricsSnapshot> | undefined): MetricsLookup | undefined {
+  const podMetrics = makeMetricsLookup('Pod', metrics);
+  if (!podMetrics || !WORKLOAD_METRIC_KINDS.has(kind)) return undefined;
+  const totals = new Map<string, { cpuMilli: number; memBytes: number; cpuRequestMilli: number; memRequestBytes: number }>();
+  for (const row of pods) {
+    const owner = workloadOwnerName(kind, row.obj);
+    if (!owner) continue;
+    const usage = podMetrics(row.ctx, row.obj.metadata.namespace, row.obj.metadata.name);
+    if (!usage) continue;
+    const key = `${row.ctx}\0${row.obj.metadata.namespace ?? ''}\0${owner}`;
+    // Requests are summed over the same pods the usage came from, so the
+    // usage bar's denominator matches its numerator.
+    const requests = podRequestTotals(row.obj);
+    const prev = totals.get(key);
+    if (prev) {
+      prev.cpuMilli += usage.cpuMilli;
+      prev.memBytes += usage.memBytes;
+      prev.cpuRequestMilli += requests.cpuMilli;
+      prev.memRequestBytes += requests.memoryBytes;
+    } else {
+      totals.set(key, { cpuMilli: usage.cpuMilli, memBytes: usage.memBytes, cpuRequestMilli: requests.cpuMilli, memRequestBytes: requests.memoryBytes });
+    }
+  }
+  return (ctx, namespace, name) => {
+    const t = totals.get(`${ctx}\0${namespace ?? ''}\0${name}`);
+    return t
+      ? { cpuMilli: t.cpuMilli, memBytes: t.memBytes, cpuCapacityMilli: t.cpuRequestMilli || undefined, memCapacityBytes: t.memRequestBytes || undefined }
+      : undefined;
+  };
+}
+
+function workloadOwnerName(kind: string, pod: KubeObject): string | undefined {
+  const owner = (pod.metadata.ownerReferences ?? []).find((o) => o.controller);
+  if (!owner) return undefined;
+  if (kind === 'Deployment') {
+    if (owner.kind !== 'ReplicaSet') return undefined;
+    const hash = pod.metadata.labels?.['pod-template-hash'];
+    return hash && owner.name.endsWith(`-${hash}`) ? owner.name.slice(0, -(hash.length + 1)) : undefined;
+  }
+  return owner.kind === kind ? owner.name : undefined;
 }
 
 /** Lookup helper bridging pod/node metrics snapshots into the column defs. */
