@@ -477,6 +477,12 @@ export interface MetricsSample {
   memBytes: number;
 }
 
+export interface ContainerUsage {
+  name: string;
+  cpuMilli: number;
+  memBytes: number;
+}
+
 export interface MetricsSnapshotEntry {
   name: string;
   namespace?: string;
@@ -485,6 +491,8 @@ export interface MetricsSnapshotEntry {
   /** Node only: allocatable totals for utilization %. */
   cpuCapacityMilli?: number;
   memCapacityBytes?: number;
+  /** Pod only: per-container usage breakdown. */
+  containers?: ContainerUsage[];
 }
 
 export interface MetricsSnapshot {

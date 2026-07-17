@@ -113,13 +113,18 @@ export class MetricsPoller {
       prune(this.nodes, liveNodes);
 
       this.latestPods = podList.items.map((p) => {
+        const containers = p.containers.map((c) => ({
+          name: c.name,
+          cpuMilli: cpuToMilli(c.usage.cpu),
+          memBytes: memToBytes(c.usage.memory),
+        }));
         let cpuMilli = 0;
         let memBytes = 0;
-        for (const c of p.containers) {
-          cpuMilli += cpuToMilli(c.usage.cpu);
-          memBytes += memToBytes(c.usage.memory);
+        for (const c of containers) {
+          cpuMilli += c.cpuMilli;
+          memBytes += c.memBytes;
         }
-        return { name: p.metadata.name, namespace: p.metadata.namespace, cpuMilli, memBytes };
+        return { name: p.metadata.name, namespace: p.metadata.namespace, cpuMilli, memBytes, containers };
       });
       const livePods = new Set<string>();
       for (const entry of this.latestPods) {

@@ -11,7 +11,8 @@ import { AgeCell } from './AgeCell.js';
 import { ReadyCounter } from './ReadyCounter.js';
 import { StatusChip } from './StatusChip.js';
 import { formatBytes, formatCpu } from './format.js';
-import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podSummary, serviceLoadBalancerAddresses, servicePorts, workloadReady } from '../kube-display.js';
+import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podRequestTotals, podSummary, serviceLoadBalancerAddresses, servicePorts, workloadReady } from '../kube-display.js';
+import { UsageMeter } from './UsageMeter.js';
 
 export type MetricsLookup = (ctx: string, namespace: string | undefined, name: string) => { cpuMilli: number; memBytes: number; cpuCapacityMilli?: number; memCapacityBytes?: number } | undefined;
 export type NodeAllocationLookup = (ctx: string, nodeName: string) => NodeAllocationSummary;
@@ -133,23 +134,33 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
   cpu: (opts) => ({
     field: 'cpu',
     headerName: 'CPU',
-    width: 90,
+    width: 120,
     type: 'number',
+    headerAlign: 'left',
+    align: 'left',
     valueGetter: (_v, row) => opts.metrics?.(row.ctx, obj(row).metadata.namespace, obj(row).metadata.name)?.cpuMilli ?? null,
     renderCell: (params) => {
       const m = opts.metrics?.(params.row.ctx, obj(params.row).metadata.namespace, obj(params.row).metadata.name);
-      return m ? formatCpu(m.cpuMilli) : '—';
+      if (!m) return '—';
+      // Workload lookups carry summed pod requests as capacity; Pod rows
+      // read requests off their own spec.
+      const max = m.cpuCapacityMilli ?? (podRequestTotals(obj(params.row)).cpuMilli || undefined);
+      return <UsageMeter value={m.cpuMilli} max={max} format={formatCpu} placeholder emptyHint="no CPU requests set" />;
     },
   }),
   memory: (opts) => ({
     field: 'memory',
     headerName: 'Memory',
-    width: 90,
+    width: 135,
     type: 'number',
+    headerAlign: 'left',
+    align: 'left',
     valueGetter: (_v, row) => opts.metrics?.(row.ctx, obj(row).metadata.namespace, obj(row).metadata.name)?.memBytes ?? null,
     renderCell: (params) => {
       const m = opts.metrics?.(params.row.ctx, obj(params.row).metadata.namespace, obj(params.row).metadata.name);
-      return m ? formatBytes(m.memBytes) : '—';
+      if (!m) return '—';
+      const max = m.memCapacityBytes ?? (podRequestTotals(obj(params.row)).memoryBytes || undefined);
+      return <UsageMeter value={m.memBytes} max={max} format={formatBytes} placeholder emptyHint="no memory requests set" />;
     },
   }),
   nodePods: (opts) => ({
@@ -693,58 +704,6 @@ function isDaemonSetPod(pod: KubeObject): boolean {
   return (pod.metadata.ownerReferences ?? []).some((owner) => owner.kind === 'DaemonSet');
 }
 
-interface ContainerWithRequests {
-  restartPolicy?: string;
-  resources?: { requests?: Record<string, string> };
-}
-
-function podRequestTotals(pod: KubeObject): { cpuMilli: number; memoryBytes: number } {
-  const spec = pod.spec as
-    | {
-        containers?: ContainerWithRequests[];
-        initContainers?: ContainerWithRequests[];
-        overhead?: Record<string, string>;
-      }
-    | undefined;
-  const containers = spec?.containers ?? [];
-  const initContainers = spec?.initContainers ?? [];
-  let appCpu = 0;
-  let appMemory = 0;
-  for (const c of containers) {
-    appCpu += parseCpuRequest(c);
-    appMemory += parseMemoryRequest(c);
-  }
-  let sidecarCpu = 0;
-  let sidecarMemory = 0;
-  let initCpu = 0;
-  let initMemory = 0;
-  for (const c of initContainers) {
-    if (isRestartableInitContainer(c)) {
-      sidecarCpu += parseCpuRequest(c);
-      sidecarMemory += parseMemoryRequest(c);
-    } else {
-      initCpu = Math.max(initCpu, parseCpuRequest(c));
-      initMemory = Math.max(initMemory, parseMemoryRequest(c));
-    }
-  }
-  return {
-    cpuMilli: sidecarCpu + Math.max(appCpu, initCpu) + Math.round(parseQuantity(spec?.overhead?.cpu) * 1000),
-    memoryBytes: sidecarMemory + Math.max(appMemory, initMemory) + Math.round(parseQuantity(spec?.overhead?.memory)),
-  };
-}
-
-function isRestartableInitContainer(container: ContainerWithRequests): boolean {
-  return container.restartPolicy === 'Always';
-}
-
-function parseCpuRequest(container: ContainerWithRequests): number {
-  return Math.round(parseQuantity(container.resources?.requests?.cpu) * 1000);
-}
-
-function parseMemoryRequest(container: ContainerWithRequests): number {
-  return Math.round(parseQuantity(container.resources?.requests?.memory));
-}
-
 export function makeNodeAllocationLookup(pods: ClusterRow[]): NodeAllocationLookup {
   const byNode = new Map<string, NodeAllocationSummary>();
   for (const row of pods) {
@@ -826,22 +785,32 @@ export const WORKLOAD_METRIC_KINDS = new Set(['Deployment', 'StatefulSet', 'Daem
 export function makeWorkloadMetricsLookup(kind: string, pods: ClusterRow[], metrics: Map<string, MetricsSnapshot> | undefined): MetricsLookup | undefined {
   const podMetrics = makeMetricsLookup('Pod', metrics);
   if (!podMetrics || !WORKLOAD_METRIC_KINDS.has(kind)) return undefined;
-  const totals = new Map<string, { cpuMilli: number; memBytes: number }>();
+  const totals = new Map<string, { cpuMilli: number; memBytes: number; cpuRequestMilli: number; memRequestBytes: number }>();
   for (const row of pods) {
     const owner = workloadOwnerName(kind, row.obj);
     if (!owner) continue;
     const usage = podMetrics(row.ctx, row.obj.metadata.namespace, row.obj.metadata.name);
     if (!usage) continue;
     const key = `${row.ctx}\0${row.obj.metadata.namespace ?? ''}\0${owner}`;
+    // Requests are summed over the same pods the usage came from, so the
+    // usage bar's denominator matches its numerator.
+    const requests = podRequestTotals(row.obj);
     const prev = totals.get(key);
     if (prev) {
       prev.cpuMilli += usage.cpuMilli;
       prev.memBytes += usage.memBytes;
+      prev.cpuRequestMilli += requests.cpuMilli;
+      prev.memRequestBytes += requests.memoryBytes;
     } else {
-      totals.set(key, { cpuMilli: usage.cpuMilli, memBytes: usage.memBytes });
+      totals.set(key, { cpuMilli: usage.cpuMilli, memBytes: usage.memBytes, cpuRequestMilli: requests.cpuMilli, memRequestBytes: requests.memoryBytes });
     }
   }
-  return (ctx, namespace, name) => totals.get(`${ctx}\0${namespace ?? ''}\0${name}`);
+  return (ctx, namespace, name) => {
+    const t = totals.get(`${ctx}\0${namespace ?? ''}\0${name}`);
+    return t
+      ? { cpuMilli: t.cpuMilli, memBytes: t.memBytes, cpuCapacityMilli: t.cpuRequestMilli || undefined, memCapacityBytes: t.memRequestBytes || undefined }
+      : undefined;
+  };
 }
 
 function workloadOwnerName(kind: string, pod: KubeObject): string | undefined {
