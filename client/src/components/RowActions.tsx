@@ -111,11 +111,13 @@ async function openLogsForTarget(target: RowActionTarget, addTab: (tab: DockTab)
   }
 }
 
-/** Inline row quick action: stream logs without opening the row menu. */
+/** Inline quick action: stream logs without opening the actions menu. Renders nothing for kinds without logs. */
 export function RowLogsButton({ target }: { target: RowActionTarget }) {
   const addTab = useDockStore((s) => s.addTab);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const actionKind = gvkForResource(target.group, target.version, target.plural)?.kind === target.kind ? target.kind : undefined;
+  if (!actionKind || !isLogTargetKind(actionKind)) return null;
   return (
     <>
       <Tooltip title="Logs">

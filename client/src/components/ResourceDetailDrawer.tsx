@@ -31,7 +31,7 @@ import { CustomResourceDetail } from './detail/CustomResourceDetail.js';
 import { RolloutHistory } from './detail/RolloutHistory.js';
 import { AgeCell } from './AgeCell.js';
 import { MetricsChart } from './MetricsChart.js';
-import { RowActions } from './RowActions.js';
+import { RowActions, RowLogsButton } from './RowActions.js';
 import { TopologyGraph } from './TopologyGraph.js';
 import { useDetailStore } from '../state/detail.js';
 
@@ -211,6 +211,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
               </Typography>
             </Box>
             <Box sx={{ flex: 1 }} />
+            {obj && <RowLogsButton target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
             {obj && <RowActions target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
             {(!inline || tab === 'map') && (
               <Tooltip title={fullScreen ? 'Restore drawer' : 'Full screen'}>
