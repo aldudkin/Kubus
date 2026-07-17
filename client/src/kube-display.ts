@@ -252,6 +252,105 @@ export function parseQuantity(q: string | undefined): number {
   return value * (QUANTITY_BINARY[m[2] ?? ''] ?? QUANTITY_DECIMAL[m[2] ?? ''] ?? 1);
 }
 
+/**
+ * Whether a printer-column or status-field name likely carries a health-like
+ * value ("Ready", "Operational State", "operationalState", "npp-state"…) —
+ * such values render as colored StatusChips.
+ */
+export function statusLikeName(name: string): boolean {
+  const last = name
+    .replace(/[-_]/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+    .split(/\s+/)
+    .pop()
+    ?.toLowerCase();
+  return !!last && STATUS_LIKE_WORDS.has(last);
+}
+
+const STATUS_LIKE_WORDS = new Set(['ready', 'readiness', 'state', 'status', 'phase', 'health', 'healthy', 'available', 'robustness']);
+
+interface ContainerWithResources {
+  restartPolicy?: string;
+  resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
+}
+
+/** Per-container requests/limits parsed to millicores / bytes; undefined when unset. */
+export interface ContainerResources {
+  cpuRequestMilli?: number;
+  memRequestBytes?: number;
+  cpuLimitMilli?: number;
+  memLimitBytes?: number;
+}
+
+export function containerResources(c: ContainerWithResources): ContainerResources {
+  return {
+    cpuRequestMilli: quantityMilli(c.resources?.requests?.cpu),
+    memRequestBytes: quantityBytes(c.resources?.requests?.memory),
+    cpuLimitMilli: quantityMilli(c.resources?.limits?.cpu),
+    memLimitBytes: quantityBytes(c.resources?.limits?.memory),
+  };
+}
+
+function quantityMilli(q: string | undefined): number | undefined {
+  return q === undefined ? undefined : Math.round(parseQuantity(q) * 1000);
+}
+
+function quantityBytes(q: string | undefined): number | undefined {
+  return q === undefined ? undefined : Math.round(parseQuantity(q));
+}
+
+function isRestartableInitContainer(container: ContainerWithResources): boolean {
+  return container.restartPolicy === 'Always';
+}
+
+// Request totals are read per row per grid pass by the list CPU/Memory cells
+// and the Node allocation lookup; cache per object (watch updates replace objects).
+const podRequestCache = new WeakMap<KubeObject, { cpuMilli: number; memoryBytes: number }>();
+
+/**
+ * Effective scheduling request of a pod: sidecars + max(app containers, init
+ * containers) + pod overhead — mirrors how the scheduler reserves resources.
+ */
+export function podRequestTotals(pod: KubeObject): { cpuMilli: number; memoryBytes: number } {
+  const cached = podRequestCache.get(pod);
+  if (cached) return cached;
+  const spec = pod.spec as
+    | {
+        containers?: ContainerWithResources[];
+        initContainers?: ContainerWithResources[];
+        overhead?: Record<string, string>;
+      }
+    | undefined;
+  let appCpu = 0;
+  let appMemory = 0;
+  for (const c of spec?.containers ?? []) {
+    appCpu += quantityMilli(c.resources?.requests?.cpu) ?? 0;
+    appMemory += quantityBytes(c.resources?.requests?.memory) ?? 0;
+  }
+  let sidecarCpu = 0;
+  let sidecarMemory = 0;
+  let initCpu = 0;
+  let initMemory = 0;
+  for (const c of spec?.initContainers ?? []) {
+    const cpu = quantityMilli(c.resources?.requests?.cpu) ?? 0;
+    const memory = quantityBytes(c.resources?.requests?.memory) ?? 0;
+    if (isRestartableInitContainer(c)) {
+      sidecarCpu += cpu;
+      sidecarMemory += memory;
+    } else {
+      initCpu = Math.max(initCpu, cpu);
+      initMemory = Math.max(initMemory, memory);
+    }
+  }
+  const totals = {
+    cpuMilli: sidecarCpu + Math.max(appCpu, initCpu) + Math.round(parseQuantity(spec?.overhead?.cpu) * 1000),
+    memoryBytes: sidecarMemory + Math.max(appMemory, initMemory) + Math.round(parseQuantity(spec?.overhead?.memory)),
+  };
+  podRequestCache.set(pod, totals);
+  return totals;
+}
+
 /** Strip noisy fields for diff/display normalization. */
 export function normalizeForDiff(obj: KubeObject): KubeObject {
   const clone = JSON.parse(JSON.stringify(obj)) as KubeObject;
