@@ -1022,7 +1022,7 @@ export function useHelmOperationEvents(): void {
           if (operation.status === 'succeeded') {
             showToast('success', `${operation.kind} completed for ${operation.namespace}/${operation.releaseName}`);
           } else {
-            showToast('error', `${operation.kind} failed for ${operation.namespace}/${operation.releaseName} — review Helm operations for recovery guidance`);
+            showToast('error', `${operation.kind} failed for ${operation.namespace}/${operation.releaseName} — review the Helm Releases page for recovery guidance`);
           }
         }
       }),

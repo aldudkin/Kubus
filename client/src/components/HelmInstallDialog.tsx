@@ -51,7 +51,6 @@ import {
 } from '../api/queries.js';
 import { useIsProtected } from '../state/clusters.js';
 import { useUiPrefsStore } from '../state/prefs.js';
-import { useHelmOperationsStore } from '../state/helm-operations.js';
 import { HelmAddRepoDialog } from './HelmAddRepoDialog.js';
 import { parseValues, valuesOverrides } from './helm-values.js';
 import { showToast } from '../state/toast.js';
@@ -305,7 +304,6 @@ function ChartRow({ chart, onSelect }: { chart: HelmChartSummary; onSelect: () =
 function ConfigureStep({ contexts, pick, onBack, onClose }: { contexts: string[]; pick: ChartPick; onBack: () => void; onClose: () => void }) {
   const theme = useTheme();
   const monoFontSize = useUiPrefsStore((s) => s.monoFontSize);
-  const setHelmOperationsOpen = useHelmOperationsStore((state) => state.setOpen);
 
   const isOci = !!pick.customRef?.startsWith('oci://');
   const isUrl = !!pick.customRef && !isOci;
@@ -392,8 +390,7 @@ function ConfigureStep({ contexts, pick, onBack, onClose }: { contexts: string[]
     install.mutate(vars, {
       onSuccess: () => {
         onClose();
-        setHelmOperationsOpen(true);
-        showToast('info', `Install started for ${vars.namespace}/${vars.name}. Progress continues in Helm operations.`);
+        showToast('info', `Install started for ${vars.namespace}/${vars.name}. Progress is shown on the Helm Releases page.`);
       },
       onError: (e) => setFormError(e.message),
     });

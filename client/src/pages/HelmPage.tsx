@@ -23,7 +23,7 @@ import { AgeCell } from '../components/AgeCell.js';
 import { NoClustersState } from '../components/NoClustersState.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { helmOperationPhaseLabel, helmOperationReleaseKey } from '../components/HelmOperationStatus.js';
-import { useHelmOperationsStore } from '../state/helm-operations.js';
+import { HelmOperationsOverview } from '../components/HelmOperationsOverview.js';
 
 const HelmInstallDialog = lazy(() => import('../components/HelmInstallDialog.js'));
 
@@ -40,7 +40,6 @@ export function HelmPage() {
   const [installOpen, setInstallOpen] = useState(false);
   const helmEngine = useAppInfo().data?.helmEngine ?? false;
   const operations = useHelmOperations();
-  const setHelmOperationsOpen = useHelmOperationsStore((state) => state.setOpen);
 
   const rows = useMemo(() => {
     const all = data ?? [];
@@ -61,14 +60,17 @@ export function HelmPage() {
   const updates = useHelmUpdates(updateItems);
   const updatesById = useMemo(() => new Map((updates.data ?? []).map((update) => [update.id, update])), [updates.data]);
   const availableUpdates = useMemo(() => (updates.data ?? []).filter((update) => update.available).length, [updates.data]);
+  const visibleOperations = useMemo(() => {
+    const contexts = new Set(selected);
+    return (operations.data ?? []).filter((operation) => contexts.has(operation.ctx));
+  }, [operations.data, selected]);
   const latestOperationByRelease = useMemo(() => {
     const byRelease = new Map<string, NonNullable<typeof operations.data>[number]>();
-    for (const operation of operations.data ?? []) {
+    for (const operation of visibleOperations) {
       if (!byRelease.has(helmOperationReleaseKey(operation))) byRelease.set(helmOperationReleaseKey(operation), operation);
     }
     return byRelease;
-  }, [operations.data]);
-  const runningOperations = operations.data?.filter((operation) => operation.status === 'running').length ?? 0;
+  }, [visibleOperations]);
 
   const columns: GridColDef<Row>[] = useMemo(() => {
     const defs: GridColDef<Row>[] = [
@@ -108,10 +110,6 @@ export function HelmPage() {
               color={operation.status === 'failed' ? 'error' : 'success'}
               variant="outlined"
               label={operation.status === 'failed' ? `${operation.kind} failed` : `${operation.kind} complete`}
-              onClick={(event) => {
-                event.stopPropagation();
-                setHelmOperationsOpen(true);
-              }}
             />
           );
         },
@@ -152,7 +150,7 @@ export function HelmPage() {
       },
     ];
     return defs.map(withCellCopy);
-  }, [latestOperationByRelease, selected.length, setHelmOperationsOpen, updates.isFetching, updatesById]);
+  }, [latestOperationByRelease, selected.length, updates.isFetching, updatesById]);
 
   const grid = useGridPrefs('helm-releases', columns);
 
@@ -164,13 +162,6 @@ export function HelmPage() {
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, p: 1.5, pt: 1.5 }}>
       <PageHeader title="Helm Releases" icon={<SailingOutlinedIcon />}>
         <Chip label={`${rows.length} releases`} variant="outlined" />
-        {runningOperations ? (
-          <Chip
-            label={`${runningOperations} Helm operation${runningOperations === 1 ? '' : 's'} running`}
-            color="info"
-            onClick={() => setHelmOperationsOpen(true)}
-          />
-        ) : null}
         {availableUpdates > 0 ? <Chip label={`${availableUpdates} update${availableUpdates === 1 ? '' : 's'} available`} color="primary" /> : null}
         <Tooltip title="Check chart repositories for updates">
           <span>
@@ -188,6 +179,13 @@ export function HelmPage() {
           </span>
         </Tooltip>
       </PageHeader>
+      <HelmOperationsOverview
+        operations={visibleOperations}
+        error={operations.error}
+        isLoading={operations.isLoading}
+        isFetching={operations.isFetching}
+        onRefresh={() => void operations.refetch()}
+      />
       <DataGrid
         rows={rows}
         columns={grid.columns}
@@ -197,7 +195,7 @@ export function HelmPage() {
         onColumnWidthChange={grid.onColumnWidthChange}
         onRowClick={(p) => navigate(`/helm/${encodeURIComponent(p.row.ctx)}/${encodeURIComponent(p.row.release.namespace)}/${encodeURIComponent(p.row.release.name)}`)}
         onCellKeyDown={handleCopyCellKeyDown}
-        sx={{ border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' }, ...copyCellGridSx }}
+        sx={{ flex: 1, minHeight: 0, border: 0, '& .MuiDataGrid-row': { cursor: 'pointer' }, ...copyCellGridSx }}
         initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
       />
       {installOpen && (

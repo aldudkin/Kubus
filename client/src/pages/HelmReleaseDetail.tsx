@@ -96,7 +96,7 @@ export function HelmReleaseDetailPage() {
       {operationError ? <HelmOperationErrorAlert error={operationError} /> : null}
       {latestOperation ? (
         <Box sx={{ mb: 1.5 }}>
-          <HelmOperationStatus operation={latestOperation} showDrawerAction={false} />
+          <HelmOperationStatus operation={latestOperation} />
         </Box>
       ) : null}
       {release && (

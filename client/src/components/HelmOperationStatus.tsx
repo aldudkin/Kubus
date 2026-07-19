@@ -1,15 +1,13 @@
+import type { ReactNode } from 'react';
 import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import LinearProgress from '@mui/material/LinearProgress';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import type { HelmOperation, HelmOperationProgressPhase } from '@kubus/shared';
 import { AgeCell } from './AgeCell.js';
-import { useHelmOperationsStore } from '../state/helm-operations.js';
 
 const PHASE_LABELS: Record<HelmOperationProgressPhase, string> = {
   queued: 'Queued',
@@ -56,13 +54,12 @@ function ResultSummary({ operation }: { operation: HelmOperation }) {
 export function HelmOperationStatus({
   operation,
   compact = false,
-  showDrawerAction = true,
+  action,
 }: {
   operation: HelmOperation;
   compact?: boolean;
-  showDrawerAction?: boolean;
+  action?: ReactNode;
 }) {
-  const setOperationsOpen = useHelmOperationsStore((state) => state.setOpen);
   const running = operation.status === 'running';
   const severity = operation.status === 'failed' ? 'error' : operation.status === 'succeeded' ? 'success' : 'info';
   const hasProgress = running && operation.totalResources !== undefined && operation.totalResources > 0;
@@ -72,13 +69,7 @@ export function HelmOperationStatus({
     <Alert
       severity={severity}
       sx={{ alignItems: 'flex-start', '& .MuiAlert-message': { width: '100%', minWidth: 0 } }}
-      action={
-        showDrawerAction ? (
-          <Button color="inherit" size="small" endIcon={<OpenInNewIcon />} onClick={() => setOperationsOpen(true)}>
-            Details
-          </Button>
-        ) : undefined
-      }
+      action={action}
     >
       <AlertTitle sx={{ mb: 0.25 }}>
         {operationTitle(operation)} · {operation.namespace}/{operation.releaseName}

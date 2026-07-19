@@ -65,7 +65,7 @@ function failureProgressPhase(failure: HelmOperationFailure | undefined, fallbac
 
 /**
  * Runs Helm mutations outside the request lifecycle and retains a bounded
- * progress history for reconnects, page navigation, and the operations drawer.
+ * progress history for reconnects, page navigation, and the releases overview.
  */
 export class HelmOperationManager {
   private operations = new Map<string, HelmOperation>();

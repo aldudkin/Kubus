@@ -79,14 +79,13 @@ they are ready. The release history remains visible to the `helm` CLI.
 
 Installs, upgrades and rollbacks run as background operations. Starting one closes the
 dialog immediately, and workload readiness is always checked without blocking the UI.
-The release page shows the current phase inline, and the Helm operations button
-in the top bar opens a drawer that follows chart resolution, rendering, hooks, each
-resource apply/prune, and workload readiness. The drawer opens only when you ask for it;
-starting an upgrade or rollback returns you to the inline release view. You can navigate
-anywhere while it runs.
+The Helm Releases overview follows chart resolution, rendering, hooks, each resource
+apply/prune, and workload readiness. Active operations and failures are shown inline;
+recent successful operations remain available from the same overview. An individual
+release page also shows its latest operation. You can navigate anywhere while it runs.
 Completion and failure notifications remain visible, and a failed operation keeps the
 waiting resources, exact phase, last successful revision and recovery guidance in the
-drawer.
+releases overview.
 
 Readiness includes current pod failures and Kubernetes warning events, not just replica
 counts. If a one-replica rolling Deployment deadlocks because its replacement pod cannot
