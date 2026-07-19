@@ -25,10 +25,20 @@ interface UiPrefsState {
   columnWidths: Record<string, Record<string, number>>;
   /** User-toggled column visibility models, keyed by table id then column field. */
   columnVisibility: Record<string, Record<string, boolean>>;
+  /** User-chosen sort, keyed by table id. */
+  sortModels: Record<string, TableSortModel>;
   set: (patch: Partial<Omit<UiPrefsState, 'set'>>) => void;
   setColumnWidth: (tableId: string, field: string, width: number) => void;
   setColumnVisibility: (tableId: string, model: Record<string, boolean>) => void;
+  setSortModel: (tableId: string, model: TableSortModel) => void;
+  /** Bulk-apply a saved view's grid snapshot; absent parts are left untouched. */
+  applyTableState: (
+    tableId: string,
+    state: { columnWidths?: Record<string, number>; columnVisibility?: Record<string, boolean>; sort?: TableSortModel },
+  ) => void;
 }
+
+export type TableSortModel = ReadonlyArray<{ field: string; sort: 'asc' | 'desc' | null | undefined }>;
 
 export const useUiPrefsStore = create<UiPrefsState>()(
   persist(
@@ -41,6 +51,7 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       protectByDefault: false,
       columnWidths: {},
       columnVisibility: {},
+      sortModels: {},
       set: (patch) => set(patch),
       setColumnWidth: (tableId, field, width) =>
         set((state) => ({
@@ -49,6 +60,16 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       setColumnVisibility: (tableId, model) =>
         set((state) => ({
           columnVisibility: { ...state.columnVisibility, [tableId]: model },
+        })),
+      setSortModel: (tableId, model) =>
+        set((state) => ({
+          sortModels: { ...state.sortModels, [tableId]: model },
+        })),
+      applyTableState: (tableId, state) =>
+        set((s) => ({
+          columnWidths: state.columnWidths ? { ...s.columnWidths, [tableId]: state.columnWidths } : s.columnWidths,
+          columnVisibility: state.columnVisibility ? { ...s.columnVisibility, [tableId]: state.columnVisibility } : s.columnVisibility,
+          sortModels: state.sort ? { ...s.sortModels, [tableId]: state.sort } : s.sortModels,
         })),
     }),
     { name: 'kubus-prefs', version: 0, storage: createJSONStorage(() => kubusStateStorage) },

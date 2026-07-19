@@ -18,6 +18,7 @@ import { useParams, useSearchParams } from 'react-router';
 import { columnsForKind, groupFromPath, groupToPath, gvkForResource, gvkLabel, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
 import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, useWatchedList, type ClusterRow } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
 import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
@@ -448,12 +449,21 @@ export function ResourceListPage() {
     if (textFilter.trim()) params.set('q', textFilter.trim());
     if (labelSelector.trim()) params.set('label', labelSelector.trim());
     const path = `${kindPath}${params.toString() ? `?${params.toString()}` : ''}`;
+    // Snapshot the grid so restoring brings back the exact table, not just
+    // the query. tableId for this grid is kindPath.
+    const prefs = useUiPrefsStore.getState();
     addSavedView({
       id: `view:${path}`,
       title: `${resourceTitle}${textFilter || labelSelector ? ' view' : ''}`,
       path,
       textFilter: textFilter.trim() || undefined,
       labelSelector: labelSelector.trim() || undefined,
+      grid: {
+        namespaces: [...useClustersStore.getState().namespaces],
+        sort: prefs.sortModels[kindPath],
+        columnVisibility: prefs.columnVisibility[kindPath],
+        columnWidths: prefs.columnWidths[kindPath],
+      },
     });
   };
 

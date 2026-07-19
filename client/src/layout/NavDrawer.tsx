@@ -34,6 +34,7 @@ import { BUILTIN_NAV_GROUPS, groupToPath, gvkForResource, gvkLabel, pluralLabel,
 import { useApiResourcesForContexts } from '../api/queries.js';
 import { HOTKEY_MOD_LABEL } from '../platform.js';
 import { useClustersStore } from '../state/clusters.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useTabsStore } from '../state/tabs.js';
 import { GROUP_ICONS } from './tab-meta.js';
@@ -256,6 +257,15 @@ function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: st
   const location = useLocation();
   const active = `${location.pathname}${location.search}` === view.path;
   const newTabHandlers = useOpenInNewTab(view.path);
+  // Views saved with a grid snapshot restore the whole table — namespaces,
+  // sort, column visibility and widths — not just the query in the path.
+  // Older views without one restore the query only.
+  const applyGridState = () => {
+    const grid = view.grid;
+    if (!grid) return;
+    if (grid.namespaces) useClustersStore.getState().setNamespaces(grid.namespaces);
+    useUiPrefsStore.getState().applyTableState(view.path.split('?')[0] ?? view.path, grid);
+  };
   return (
     <ListItem
       disablePadding
@@ -277,7 +287,21 @@ function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: st
       }
       sx={{ '& .MuiListItemSecondaryAction-root': { right: 4 } }}
     >
-      <ListItemButton component={NavLink} to={view.path} dense selected={active} {...newTabHandlers} sx={{ pl: ITEM_INDENT, py: 0.375, pr: 4.5 }}>
+      <ListItemButton
+        component={NavLink}
+        to={view.path}
+        dense
+        selected={active}
+        onClick={(e) => {
+          applyGridState();
+          newTabHandlers.onClick(e);
+        }}
+        onAuxClick={(e) => {
+          applyGridState();
+          newTabHandlers.onAuxClick(e);
+        }}
+        sx={{ pl: ITEM_INDENT, py: 0.375, pr: 4.5 }}
+      >
         <ListItemText primary={view.title} slotProps={{ primary: { variant: 'body2', noWrap: true } }} />
       </ListItemButton>
     </ListItem>

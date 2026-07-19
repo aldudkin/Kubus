@@ -6,7 +6,7 @@ import Chip from '@mui/material/Chip';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams } from '@mui/x-data-grid';
+import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams, type GridSortModel } from '@mui/x-data-grid';
 import type { ClusterRow } from '../api/queries.js';
 import { matchesPlainText, matchesSmartFilter, parseSmartFilter } from '../smart-filter.js';
 import { joinLabelSelector, splitLabelSelector } from '../label-selector.js';
@@ -45,6 +45,8 @@ interface Props {
 }
 
 const labelFilterOptions = createFilterOptions<string>({ limit: 100 });
+
+const DEFAULT_SORT: GridSortModel = [{ field: 'name', sort: 'asc' }];
 
 /** All `key` and `key=value` selector terms present in the rows. */
 function labelSelectorOptions(rows: ClusterRow[]): { terms: string[]; keys: Set<string> } {
@@ -99,27 +101,35 @@ export function ResourceTable({
   useEffect(() => () => clearTimeout(commitTimer.current), []);
 
   const hiddenKey = (hiddenFields ?? []).join(',');
-  const visibilityFromHidden = () => Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
-  // A saved model wins over the default-hidden set; without one, visibility
-  // starts from (and resets with) the defaults.
+  // Visibility and sort are driven straight from the prefs store (keyed by
+  // tableId), so instance reuse across tables resolves the right model and
+  // external writes — a saved-view restore — apply to a mounted table
+  // immediately. A saved model wins over the default-hidden set. Tables
+  // without a tableId fall back to local state.
   const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
   const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
-  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(() => storedVisibility ?? visibilityFromHidden());
-  // Re-seed visibility when this instance is reused for another table (same
-  // route, different kind — tableId changes) or when the default-hidden set
-  // changes, without paying an extra effect-driven render pass.
-  const visibilityKey = `${tableId ?? ''}|${hiddenKey}`;
-  const [prevVisibilityKey, setPrevVisibilityKey] = useState(visibilityKey);
-  if (prevVisibilityKey !== visibilityKey) {
-    setPrevVisibilityKey(visibilityKey);
-    setVisibility(storedVisibility ?? visibilityFromHidden());
-  }
+  const [localVisibility, setLocalVisibility] = useState<GridColumnVisibilityModel | undefined>(undefined);
+  const visibility = useMemo<GridColumnVisibilityModel>(
+    () => (tableId ? storedVisibility : localVisibility) ?? Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []),
+    [tableId, storedVisibility, localVisibility, hiddenKey],
+  );
   const handleVisibilityChange = useCallback(
     (model: GridColumnVisibilityModel) => {
-      setVisibility(model);
       if (tableId) setStoredVisibility(tableId, model);
+      else setLocalVisibility(model);
     },
     [tableId, setStoredVisibility],
+  );
+  const storedSort = useUiPrefsStore((s) => (tableId ? s.sortModels[tableId] : undefined));
+  const setStoredSort = useUiPrefsStore((s) => s.setSortModel);
+  const [localSort, setLocalSort] = useState<GridSortModel | undefined>(undefined);
+  const sortModel = (tableId ? storedSort : localSort) ?? DEFAULT_SORT;
+  const handleSortChange = useCallback(
+    (model: GridSortModel) => {
+      if (tableId) setStoredSort(tableId, model);
+      else setLocalSort(model);
+    },
+    [tableId, setStoredSort],
   );
   const tableDensity = useUiPrefsStore((s) => s.tableDensity);
   // Retrieve this table's saved column widths (if any)
@@ -283,7 +293,8 @@ export function ResourceTable({
         onColumnVisibilityModelChange={handleVisibilityChange}
         onColumnWidthChange={tableId ? (params) => setColumnWidth(tableId, params.colDef.field, params.width) : undefined}
         onCellKeyDown={handleCopyCellKeyDown}
-        initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
+        sortModel={sortModel}
+        onSortModelChange={handleSortChange}
         sx={{
           border: 0,
           flex: 1,
