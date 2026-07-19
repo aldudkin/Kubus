@@ -173,7 +173,15 @@ function EmbeddedResourceDetail() {
           e.stopPropagation();
           const page = asideRef.current?.closest('.kubus-resource-page');
           handleClose();
-          page?.querySelector<HTMLElement>('.MuiDataGrid-cell[tabindex="0"], .MuiDataGrid-columnHeader[tabindex="0"]')?.focus();
+          // Query after the close re-renders — the grid re-lays-out without
+          // the panel and may recreate cell nodes. Prefer the cell the grid
+          // last had focused, fall back to the first cell.
+          requestAnimationFrame(() => {
+            const cell =
+              page?.querySelector<HTMLElement>('.MuiDataGrid-cell[tabindex="0"], .MuiDataGrid-columnHeader[tabindex="0"]') ??
+              page?.querySelector<HTMLElement>('.MuiDataGrid-cell');
+            cell?.focus();
+          });
         }}
         sx={{
           position: 'relative',

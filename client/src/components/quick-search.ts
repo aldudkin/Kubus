@@ -22,7 +22,10 @@ export function useQuickSearchShortcut(inputRef: RefObject<HTMLInputElement | nu
       const isFindShortcut = shortcutModifier && !event.altKey && !event.shiftKey && key === 'f';
       const isQuickSearchShortcut = !shortcutModifier && !event.altKey && (key === 's' || key === ':' || key === '/');
       if (!isFindShortcut && !isQuickSearchShortcut) return;
-      event.preventDefault();
+      // `/` keeps its default action: after focus moves, the browser inserts
+      // it into the (selected) input, dropping the user straight into
+      // smart-filter syntax. The other triggers must not be typed.
+      if (key !== '/') event.preventDefault();
       event.stopPropagation();
       inputRef.current?.focus();
       inputRef.current?.select();
