@@ -189,10 +189,10 @@ export function ResourceTable({
   };
 
   const focusSearch = useCallback(() => {
-    requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.select();
-    });
+    // Focus synchronously: deferring (e.g. into a rAF) leaves a gap where
+    // keystrokes typed right after the trigger key still hit the grid.
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
   }, []);
 
   // Tables in hidden tab panes stay mounted; only the visible one may own the
