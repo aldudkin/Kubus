@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { layout } from '../theme.js';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -11,6 +11,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import { useLocation, useNavigate } from 'react-router';
 import { useTabsStore } from '../state/tabs.js';
 import { useClustersStore } from '../state/clusters.js';
+import { applySavedViewGridState } from '../state/saved-view.js';
 import { useApiResourcesForContexts } from '../api/queries.js';
 import { tabMeta } from './tab-meta.js';
 
@@ -26,12 +27,21 @@ export const TabsBar = memo(function TabsBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const current = location.pathname + location.search;
+  const activeTab = tabs.find((tab) => tab.id === activeId);
 
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const dragIndexRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeTabRef = useRef<HTMLDivElement>(null);
+
+  // A background saved-view tab carries its snapshot without touching the
+  // visible page. Consume it exactly once when that tab becomes active.
+  useLayoutEffect(() => {
+    if (!activeId || !activeTab?.pendingSavedView) return;
+    applySavedViewGridState(activeTab.path, activeTab.pendingSavedView);
+    useTabsStore.getState().clearPendingSavedView(activeId);
+  }, [activeId, activeTab?.path, activeTab?.pendingSavedView]);
 
   // Router → store: the active tab always mirrors the current location, so
   // in-page navigation (filters, detail deep links, drill-downs) is captured.

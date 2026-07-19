@@ -33,7 +33,7 @@ interface UiPrefsState {
   setColumnWidth: (tableId: string, field: string, width: number) => void;
   setColumnVisibility: (tableId: string, model: Record<string, boolean>) => void;
   setSortModel: (tableId: string, model: TableSortModel) => void;
-  /** Bulk-apply a saved view's grid snapshot; absent parts are left untouched. */
+  /** Replace a table with a saved snapshot; absent parts restore implicit defaults. */
   applyTableState: (
     tableId: string,
     state: { columnWidths?: Record<string, number>; columnVisibility?: Record<string, boolean>; sort?: TableSortModel },
@@ -41,6 +41,13 @@ interface UiPrefsState {
 }
 
 export type TableSortModel = ReadonlyArray<{ field: string; sort: 'asc' | 'desc' | null | undefined }>;
+
+function replaceTableValue<T>(values: Record<string, T>, tableId: string, value: T | undefined): Record<string, T> {
+  const next = { ...values };
+  if (value === undefined) delete next[tableId];
+  else next[tableId] = value;
+  return next;
+}
 
 export const useUiPrefsStore = create<UiPrefsState>()(
   persist(
@@ -70,9 +77,9 @@ export const useUiPrefsStore = create<UiPrefsState>()(
         })),
       applyTableState: (tableId, state) =>
         set((s) => ({
-          columnWidths: state.columnWidths ? { ...s.columnWidths, [tableId]: state.columnWidths } : s.columnWidths,
-          columnVisibility: state.columnVisibility ? { ...s.columnVisibility, [tableId]: state.columnVisibility } : s.columnVisibility,
-          sortModels: state.sort ? { ...s.sortModels, [tableId]: state.sort } : s.sortModels,
+          columnWidths: replaceTableValue(s.columnWidths, tableId, state.columnWidths),
+          columnVisibility: replaceTableValue(s.columnVisibility, tableId, state.columnVisibility),
+          sortModels: replaceTableValue(s.sortModels, tableId, state.sort),
         })),
     }),
     { name: 'kubus-prefs', version: 0, storage: createJSONStorage(() => kubusStateStorage) },

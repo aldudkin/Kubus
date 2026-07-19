@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router';
 import { ApiError, initAuthToken } from './api/http.js';
+import { isMutationErrorHandledLocally } from './api/mutation-errors.js';
 import { showToast } from './state/toast.js';
 import App from './App.js';
 
@@ -15,6 +16,7 @@ const queryClient = new QueryClient({
     // failures are excluded — the global status banner owns those.
     onError: (error, _variables, _context, mutation) => {
       if (mutation.options.onError) return;
+      if (isMutationErrorHandledLocally(mutation.meta)) return;
       if (error instanceof ApiError && (error.status === 0 || error.status === 401)) return;
       showToast('error', error instanceof Error ? error.message : String(error));
     },

@@ -35,9 +35,9 @@ import { BUILTIN_NAV_GROUPS, groupToPath, gvkForResource, gvkLabel, pluralLabel,
 import { useApiResourcesForContexts } from '../api/queries.js';
 import { HOTKEY_MOD_LABEL } from '../platform.js';
 import { useClustersStore } from '../state/clusters.js';
-import { useUiPrefsStore } from '../state/prefs.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useTabsStore } from '../state/tabs.js';
+import { applySavedViewGridState } from '../state/saved-view.js';
 import { GROUP_ICONS } from './tab-meta.js';
 
 const WIDTH = layout.navDrawerWidth;
@@ -61,12 +61,13 @@ function hotkeyFavorites(favorites: FavoriteItem[]): FavoriteItem[] {
  * page tab (+Shift focuses it), middle-click opens a background tab.
  * Plain clicks keep navigating the active tab via NavLink.
  */
-function useOpenInNewTab(to: string) {
+function useOpenInNewTab(to: string, pendingSavedView?: SavedView['grid']) {
   const openTab = useTabsStore((s) => s.openTab);
   const navigate = useNavigate();
   const open = (e: React.MouseEvent, foreground: boolean) => {
     e.preventDefault();
-    openTab(to, { activate: foreground, afterActive: true });
+    if (foreground && pendingSavedView) applySavedViewGridState(to, pendingSavedView);
+    openTab(to, { activate: foreground, afterActive: true, pendingSavedView: foreground ? undefined : pendingSavedView });
     if (foreground) void navigate(to);
   };
   return {
@@ -257,15 +258,14 @@ function NavEntry({
 function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: string) => void }) {
   const location = useLocation();
   const active = `${location.pathname}${location.search}` === view.path;
-  const newTabHandlers = useOpenInNewTab(view.path);
+  const newTabHandlers = useOpenInNewTab(view.path, view.grid);
   // Views saved with a grid snapshot restore the whole table — namespaces,
   // sort, column visibility and widths — not just the query in the path.
   // Older views without one restore the query only.
   const applyGridState = () => {
     const grid = view.grid;
     if (!grid) return;
-    if (grid.namespaces) useClustersStore.getState().setNamespaces(grid.namespaces);
-    useUiPrefsStore.getState().applyTableState(view.path.split('?')[0] ?? view.path, grid);
+    applySavedViewGridState(view.path, grid);
   };
   return (
     <ListItem
@@ -294,11 +294,10 @@ function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: st
         dense
         selected={active}
         onClick={(e) => {
-          applyGridState();
+          if (!e.ctrlKey && !e.metaKey) applyGridState();
           newTabHandlers.onClick(e);
         }}
         onAuxClick={(e) => {
-          applyGridState();
           newTabHandlers.onAuxClick(e);
         }}
         sx={{ pl: ITEM_INDENT, py: 0.375, pr: 4.5 }}

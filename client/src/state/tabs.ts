@@ -1,12 +1,15 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { StateStorage } from 'zustand/middleware';
+import type { SavedViewGridState } from '@kubus/shared';
 import { kubusStateStorage } from './persist-storage.js';
 
 export interface PageTab {
   id: string;
   /** In-app location the tab shows: pathname + search (e.g. '/r/core/v1/pods?q=web'). */
   path: string;
+  /** Saved-view state waiting to be applied the first time this tab is activated. */
+  pendingSavedView?: SavedViewGridState;
 }
 
 interface TabsState {
@@ -14,7 +17,8 @@ interface TabsState {
   activeId?: string;
   /** Paths of recently closed tabs, oldest first; feeds "reopen closed tab". */
   closedPaths: string[];
-  openTab: (path: string, opts?: { activate?: boolean; afterActive?: boolean }) => void;
+  openTab: (path: string, opts?: { activate?: boolean; afterActive?: boolean; pendingSavedView?: SavedViewGridState }) => void;
+  clearPendingSavedView: (id: string) => void;
   closeTab: (id: string) => void;
   closeOthers: (id: string) => void;
   closeRight: (id: string) => void;
@@ -62,8 +66,8 @@ function debouncedStorage(base: StateStorage, ms: number): StateStorage {
   };
 }
 
-function freshTab(path: string): PageTab {
-  return { id: pageTabId(), path };
+function freshTab(path: string, pendingSavedView?: SavedViewGridState): PageTab {
+  return { id: pageTabId(), path, pendingSavedView };
 }
 
 function recordClosed(closedPaths: string[], ...paths: string[]): string[] {
@@ -80,13 +84,23 @@ export const useTabsStore = create<TabsState>()(
       closedPaths: [],
       openTab: (path, opts) =>
         set((s) => {
-          const tab = freshTab(path);
+          const tab = freshTab(path, opts?.pendingSavedView);
           const activeIdx = s.tabs.findIndex((t) => t.id === s.activeId);
           const at = opts?.afterActive && activeIdx >= 0 ? activeIdx + 1 : s.tabs.length;
           return {
             tabs: [...s.tabs.slice(0, at), tab, ...s.tabs.slice(at)],
             activeId: opts?.activate === false ? s.activeId : tab.id,
           };
+        }),
+      clearPendingSavedView: (id) =>
+        set((s) => {
+          const idx = s.tabs.findIndex((tab) => tab.id === id);
+          if (idx < 0 || !s.tabs[idx]!.pendingSavedView) return s;
+          const tabs = [...s.tabs];
+          const tab = { ...tabs[idx]! };
+          delete tab.pendingSavedView;
+          tabs[idx] = tab;
+          return { tabs };
         }),
       closeTab: (id) =>
         set((s) => {
@@ -136,7 +150,8 @@ export const useTabsStore = create<TabsState>()(
         set((s) => {
           const idx = s.tabs.findIndex((t) => t.id === id);
           if (idx < 0) return s;
-          const tab = freshTab(s.tabs[idx]!.path);
+          const source = s.tabs[idx]!;
+          const tab = freshTab(source.path, source.pendingSavedView);
           return { tabs: [...s.tabs.slice(0, idx + 1), tab, ...s.tabs.slice(idx + 1)], activeId: tab.id };
         }),
       setActive: (id) => set({ activeId: id }),
