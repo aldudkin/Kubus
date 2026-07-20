@@ -53,6 +53,7 @@ export async function collectCertificates(handle: ClusterHandle, crds: KubeObjec
   };
 
   const certCrd = resolveCrd(new Map(crds.map((c) => [c.metadata.name, c])), 'certificates.cert-manager.io');
+  const collectedCerts = new Set<string>();
   if (certCrd) {
     const acquired = handle.watchers.acquire(certCrd.group, certCrd.version, certCrd.plural);
     try {
@@ -60,6 +61,7 @@ export async function collectCertificates(handle: ClusterHandle, crds: KubeObjec
       for (const cert of result.items) {
         if (!inScope(cert)) continue;
         total += 1;
+        collectedCerts.add(`${cert.metadata.namespace ?? ''}/${cert.metadata.name}`);
         const notAfter = (cert.status as { notAfter?: string } | undefined)?.notAfter;
         if (notAfter) {
           push({
@@ -86,9 +88,11 @@ export async function collectCertificates(handle: ClusterHandle, crds: KubeObjec
     secretsUnavailable = result.unavailable;
     for (const secret of result.items) {
       if ((secret as { type?: string }).type !== 'kubernetes.io/tls' || !inScope(secret)) continue;
-      // cert-manager stamps the secrets it manages — the Certificate entry
-      // above already covers those.
-      if (secret.metadata.annotations?.['cert-manager.io/certificate-name']) continue;
+      // cert-manager stamps the secrets it manages — skip only when the
+      // owning Certificate was actually collected above (RBAC may allow
+      // Secrets but deny Certificates; then the Secret is our only view).
+      const ownerCert = secret.metadata.annotations?.['cert-manager.io/certificate-name'];
+      if (ownerCert && collectedCerts.has(`${secret.metadata.namespace ?? ''}/${ownerCert}`)) continue;
       total += 1;
       const notAfter = tlsSecretNotAfter(secret);
       if (notAfter) {

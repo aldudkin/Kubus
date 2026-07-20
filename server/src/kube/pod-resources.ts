@@ -16,20 +16,24 @@ interface PodSpecResources {
 
 function podSpecResources(pod: KubeObject): PodSpecResources {
   const spec = pod.spec as { containers?: ContainerSpec[]; initContainers?: ContainerSpec[] } | undefined;
-  // Regular containers plus restartable init containers (sidecars) — those
-  // run for the pod's whole life and count toward scheduling.
-  const containers = [
-    ...(spec?.containers ?? []),
-    ...(spec?.initContainers ?? []).filter((c) => c.restartPolicy === 'Always'),
-  ];
-  const acc: PodSpecResources = { cpuRequestMilli: 0, memRequestBytes: 0, cpuLimitMilli: 0, memLimitBytes: 0 };
-  for (const c of containers) {
-    acc.cpuRequestMilli += cpuToMilli(c.resources?.requests?.cpu);
-    acc.memRequestBytes += memToBytes(c.resources?.requests?.memory);
-    acc.cpuLimitMilli += cpuToMilli(c.resources?.limits?.cpu);
-    acc.memLimitBytes += memToBytes(c.resources?.limits?.memory);
-  }
-  return acc;
+  const inits = spec?.initContainers ?? [];
+  // Kubernetes effective pod resources: regular containers plus restartable
+  // init containers (sidecars) run for the pod's whole life and sum; a
+  // non-restartable init container runs alone first, so the pod reserves at
+  // least its single largest requirement.
+  const running = [...(spec?.containers ?? []), ...inits.filter((c) => c.restartPolicy === 'Always')];
+  const regularInits = inits.filter((c) => c.restartPolicy !== 'Always');
+  const effective = (pick: (c: ContainerSpec) => number): number =>
+    Math.max(
+      running.reduce((sum, c) => sum + pick(c), 0),
+      regularInits.reduce((max, c) => Math.max(max, pick(c)), 0),
+    );
+  return {
+    cpuRequestMilli: effective((c) => cpuToMilli(c.resources?.requests?.cpu)),
+    memRequestBytes: effective((c) => memToBytes(c.resources?.requests?.memory)),
+    cpuLimitMilli: effective((c) => cpuToMilli(c.resources?.limits?.cpu)),
+    memLimitBytes: effective((c) => memToBytes(c.resources?.limits?.memory)),
+  };
 }
 
 /**

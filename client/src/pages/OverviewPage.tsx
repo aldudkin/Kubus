@@ -256,11 +256,15 @@ function WholeClusterSection({ ctx }: { ctx: string }) {
 
           <WarningEventsCard events={data.warningEvents} />
 
-          {data.failingPods.length === 0 && data.unavailableWorkloads.length === 0 && data.warningEvents.length === 0 && (
-            <Alert severity="success" variant="outlined">
-              No problems detected — all workloads healthy.
-            </Alert>
-          )}
+          {data.failingPods.length === 0 &&
+            data.unavailableWorkloads.length === 0 &&
+            data.warningEvents.length === 0 &&
+            data.certificates.expiring.length === 0 &&
+            data.operators.every((op) => op.resources.every((r) => r.issues.length === 0 && r.ready >= r.total)) && (
+              <Alert severity="success" variant="outlined">
+                No problems detected — all workloads healthy.
+              </Alert>
+            )}
         </>
       )}
     </>

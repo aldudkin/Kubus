@@ -118,8 +118,10 @@ function readiness(check: ReadinessCheck, obj: KubeObject): { ready: boolean; re
   }
   if (check === 'argo-rollout') {
     const status = obj.status as { phase?: string; message?: string } | undefined;
-    const ready = status?.phase !== 'Degraded';
-    return ready ? { ready } : { ready, reason: status?.phase, message: status?.message };
+    // No phase yet (not reconciled) — don't invent a failure; any explicit
+    // non-Healthy phase (Progressing, Paused, Degraded) is not ready.
+    if (!status?.phase || status.phase === 'Healthy') return { ready: true };
+    return { ready: false, reason: status.phase, message: status.message };
   }
   const conditions = (obj.status as { conditions?: Condition[] } | undefined)?.conditions ?? [];
   const readyCond = conditions.find((c) => c.type === 'Ready');
@@ -186,9 +188,10 @@ async function rollupResource(
       version: crd.version,
       plural: crd.plural,
       namespaced: crd.namespaced,
-      total: unavailable ? 0 : items.length,
+      total: items.length,
       ready,
       issues,
+      unavailable: unavailable || undefined,
     };
   } finally {
     release();

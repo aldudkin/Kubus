@@ -719,6 +719,8 @@ export interface OperatorResourceRollup {
   total: number;
   ready: number;
   issues: OverviewWorkloadIssue[];
+  /** Resource API missing or RBAC-denied — counts are unknown, not zero. */
+  unavailable?: boolean;
 }
 
 export interface OperatorRollup {

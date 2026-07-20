@@ -26,6 +26,14 @@ import { WorkloadHealthSection } from './WorkloadHealthSection.js';
 export function NamespaceOverviewSection({ ctx, namespaces }: { ctx: string; namespaces: string[] }) {
   const { data, isLoading, error } = useNamespaceOverview(ctx, namespaces);
   const single = namespaces.length === 1;
+  // The success alert must agree with every problem card above it.
+  const healthy =
+    !!data &&
+    data.issues.length === 0 &&
+    data.failingPods.length === 0 &&
+    data.warningEvents.length === 0 &&
+    data.certificates.expiring.length === 0 &&
+    data.operators.every((op) => op.resources.every((r) => r.issues.length === 0 && r.ready >= r.total));
 
   return (
     <>
@@ -65,7 +73,7 @@ export function NamespaceOverviewSection({ ctx, namespaces }: { ctx: string; nam
 
           <WarningEventsCard events={data.warningEvents} />
 
-          {data.issues.length === 0 && data.failingPods.length === 0 && data.warningEvents.length === 0 && (
+          {healthy && (
             <Alert severity="success" variant="outlined">
               No problems detected in {single ? 'this namespace' : 'these namespaces'}.
             </Alert>

@@ -13,7 +13,7 @@ import { ProblemCard, kindListPath } from './cards.js';
  */
 export function OperatorSection({ ctx, operators, scoped }: { ctx: string; operators: OperatorRollup[]; scoped?: boolean }) {
   const navigate = useNavigate();
-  const shown = scoped ? operators.filter((op) => op.resources.some((r) => r.total > 0)) : operators;
+  const shown = scoped ? operators.filter((op) => op.resources.some((r) => r.total > 0 || r.unavailable)) : operators;
   if (shown.length === 0) return null;
 
   return (
@@ -26,11 +26,12 @@ export function OperatorSection({ ctx, operators, scoped }: { ctx: string; opera
             </Typography>
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, flex: 1, minWidth: 0 }}>
               {op.resources.map((r) => {
-                const degraded = r.ready < r.total;
+                const degraded = !r.unavailable && r.ready < r.total;
                 return (
                   <ButtonBase
                     key={r.plural}
                     onClick={() => navigate(kindListPath(r))}
+                    title={r.unavailable ? 'Resource API unavailable on this cluster' : undefined}
                     sx={{
                       px: 1,
                       py: 0.5,
@@ -44,8 +45,8 @@ export function OperatorSection({ ctx, operators, scoped }: { ctx: string; opera
                     <Typography variant="caption" color="text.secondary">
                       {pluralLabel(r.kind)}
                     </Typography>
-                    <Typography variant="caption" sx={{ fontWeight: 700, color: degraded ? 'warning.main' : undefined }}>
-                      {r.ready}/{r.total}
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: degraded ? 'warning.main' : r.unavailable ? 'text.disabled' : undefined }}>
+                      {r.unavailable ? 'unavailable' : `${r.ready}/${r.total}`}
                     </Typography>
                   </ButtonBase>
                 );
