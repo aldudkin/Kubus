@@ -64,7 +64,7 @@ import { watchClient } from '../api/ws/watch-client.js';
 import { useDockStore, dockTabId, type DockTab } from '../state/dock.js';
 import { useIsProtected } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
-import { showToast } from '../state/toast.js';
+import { showErrorToast, showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { FileCopyDialog } from './FileCopyDialog.js';
 import { TriggerCronJobDialog } from './TriggerCronJobDialog.js';
@@ -205,7 +205,7 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
   const removeFavorite = useNavigationStore((s) => s.removeFavorite);
 
   const ok = (text: string) => showToast('success', text);
-  const fail = (err: unknown) => showToast('error', err instanceof Error ? err.message : String(err));
+  const fail = (err: unknown) => showErrorToast(err);
 
   const scalable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'ReplicaSet';
   const navigate = useNavigate();
