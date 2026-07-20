@@ -199,7 +199,7 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
 
   const scalable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'ReplicaSet';
   const navigate = useNavigate();
-  const scaler = useOwningScaler(scalable ? target : undefined);
+  const { scaler } = useOwningScaler(scalable ? target : undefined);
   const restartable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'DaemonSet';
   const isReplicaSet = actionKind === 'ReplicaSet';
   const isPod = actionKind === 'Pod';
@@ -599,15 +599,22 @@ interface OwningScaler {
   maxReplicas?: number;
 }
 
-/** Resolve the HPA or KEDA ScaledObject that owns a workload's replica count, if any. */
-function useOwningScaler(target: RowActionTarget | undefined): OwningScaler | undefined {
-  const { data: hpas } = useResourceList(
+/**
+ * Resolve the HPA or KEDA ScaledObject that owns a workload's replica count, if any.
+ * `pending` covers only the initial lookup; a failed lookup resolves to no scaler so
+ * users without HPA list access can still scale manually.
+ */
+function useOwningScaler(target: RowActionTarget | undefined): { scaler: OwningScaler | undefined; pending: boolean } {
+  const { data: hpas, isLoading } = useResourceList(
     target
       ? { ctx: target.ctx, group: 'autoscaling', version: 'v2', plural: 'horizontalpodautoscalers', namespace: target.obj.metadata.namespace }
       : undefined,
   );
-  if (!target) return undefined;
-  const hpa = hpas?.items.find((h) => {
+  return { scaler: target ? findOwningScaler(target, hpas?.items) : undefined, pending: !!target && isLoading };
+}
+
+function findOwningScaler(target: RowActionTarget, hpas: KubeObject[] | undefined): OwningScaler | undefined {
+  const hpa = hpas?.find((h) => {
     const ref = (h.spec as HpaSpec | undefined)?.scaleTargetRef;
     if (ref?.kind !== target.kind || ref.name !== target.obj.metadata.name) return false;
     const refGroup = ref.apiVersion ? (ref.apiVersion.includes('/') ? ref.apiVersion.split('/')[0] : '') : undefined;
@@ -637,8 +644,8 @@ function ScaleDialog({ target, onClose, onDone, onError }: { target: RowActionTa
   const [typed, setTyped] = useState('');
   // Manual scaling of an autoscaled workload is disabled until explicitly overridden.
   const [override, setOverride] = useState(false);
-  const scaler = useOwningScaler(target);
-  const overrideBlocked = !!scaler && !override;
+  const { scaler, pending: scalerPending } = useOwningScaler(target);
+  const overrideBlocked = scalerPending || (!!scaler && !override);
   // Scaling a protected cluster's workload to zero is effectively an outage — require typed confirmation.
   const needsConfirm = isProtected && replicas === 0 && current > 0;
   const confirmBlocked = needsConfirm && typed !== target.obj.metadata.name;
