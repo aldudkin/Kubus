@@ -26,7 +26,7 @@ interface ParsedSchedule {
   every?: string;
 }
 
-function parseSchedule(schedule: string): ParsedSchedule {
+function parseSchedule(schedule: string): ParsedSchedule | undefined {
   let expr = schedule.trim();
   let tz: string | undefined;
   const tzMatch = /^(?:CRON_)?TZ=(\S+)\s+(.*)$/.exec(expr);
@@ -36,12 +36,12 @@ function parseSchedule(schedule: string): ParsedSchedule {
   }
   if (expr.startsWith('@every')) return { expr, tz, every: expr.slice(6).trim() };
   expr = MACROS[expr] ?? expr;
+  const fields = expr.split(/\s+/);
+  // Kubernetes (robfig ParseStandard) takes exactly five fields — croner would
+  // happily preview a seconds-first six-field expression the API server rejects.
+  if (fields.length !== 5) return undefined;
   // robfig treats `?` as `*`; croner would substitute its startup time instead.
-  expr = expr
-    .split(/\s+/)
-    .map((field) => (field === '?' ? '*' : field))
-    .join(' ');
-  return { expr, tz };
+  return { expr: fields.map((field) => (field === '?' ? '*' : field)).join(' '), tz };
 }
 
 // Column valueGetters run per row per grid pass — cache the parsed pattern.
@@ -68,7 +68,7 @@ function cronFor(expr: string, tz: string): Cron | null {
  */
 export function cronNextRun(schedule: string, timeZone?: string): Date | undefined {
   const parsed = parseSchedule(schedule);
-  if (parsed.every !== undefined) return undefined;
+  if (!parsed || parsed.every !== undefined) return undefined;
   try {
     return cronFor(parsed.expr, parsed.tz ?? timeZone ?? 'UTC')?.nextRun() ?? undefined;
   } catch {
@@ -79,7 +79,7 @@ export function cronNextRun(schedule: string, timeZone?: string): Date | undefin
 /** The next `count` fire times, for schedule previews. Empty when unparseable or `@every`. */
 export function cronNextRuns(schedule: string, timeZone: string | undefined, count: number): Date[] {
   const parsed = parseSchedule(schedule);
-  if (parsed.every !== undefined) return [];
+  if (!parsed || parsed.every !== undefined) return [];
   try {
     return cronFor(parsed.expr, parsed.tz ?? timeZone ?? 'UTC')?.nextRuns(count) ?? [];
   } catch {
@@ -94,7 +94,9 @@ export function cronHumanText(schedule: string): string | undefined {
   if (humanCache.has(schedule)) return humanCache.get(schedule);
   const parsed = parseSchedule(schedule);
   let text: string | undefined;
-  if (parsed.every !== undefined) {
+  if (!parsed) {
+    text = undefined;
+  } else if (parsed.every !== undefined) {
     text = parsed.every ? `Every ${parsed.every}` : undefined;
   } else {
     try {

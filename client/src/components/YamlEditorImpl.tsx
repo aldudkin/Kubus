@@ -108,7 +108,13 @@ export default function YamlEditorImpl({ value, readOnly, onApply, onDryRun, app
                 {dryRunBusy ? 'Validating…' : dryRunCurrent?.ok ? 'Validated' : 'Dry run'}
               </Button>
             ) : null}
-            <Button disabled={!dirty || busy} onClick={() => setText(value)}>
+            <Button
+              disabled={!dirty || busy}
+              onClick={() => {
+                setText(value);
+                onChange?.(value);
+              }}
+            >
               Reset
             </Button>
             <Button variant="contained" disabled={!applicable || busy || !dryRunPassed} onClick={() => void apply()}>
