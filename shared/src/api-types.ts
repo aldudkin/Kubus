@@ -690,8 +690,43 @@ export interface OverviewWorkloadIssue {
   kind: string;
   namespace: string;
   name: string;
+  /** Replica-shaped kinds only (Deployment ready/desired, PDB healthy/desired…). */
+  ready?: number;
+  desired?: number;
+  /** Short machine-ish cause: Unavailable, Failed, Pending, NoDisruptionsAllowed, AtQuota… */
+  reason?: string;
+  message?: string;
+}
+
+/** Per-kind rollup for the unified workload-health section. */
+export interface OverviewKindHealth {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  total: number;
+  unhealthy: number;
+  /** Resource API missing or RBAC-denied on this cluster. */
+  unavailable?: boolean;
+}
+
+export interface OperatorResourceRollup {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  namespaced: boolean;
+  total: number;
   ready: number;
-  desired: number;
+  issues: OverviewWorkloadIssue[];
+}
+
+export interface OperatorRollup {
+  /** Stable slug: cert-manager, argo, flux, keda, karpenter. */
+  id: string;
+  /** Display name. */
+  name: string;
+  resources: OperatorResourceRollup[];
 }
 
 export interface OverviewWarningEvent {
@@ -733,6 +768,73 @@ export interface ClusterOverview {
   unavailableWorkloads: OverviewWorkloadIssue[];
   recentRestarts: OverviewRestart[];
   warningEvents: OverviewWarningEvent[];
+  /** Unified per-kind health across workloads, autoscaling, storage, and policy. */
+  workloadHealth: OverviewKindHealth[];
+  /** Rollups for operators whose CRDs are installed (cert-manager, Argo, Flux, KEDA, Karpenter). */
+  operators: OperatorRollup[];
+}
+
+// ---- Pod resource usage vs requests/limits (overview panels) ----
+
+export interface PodResourceUsage {
+  namespace: string;
+  name: string;
+  cpuUsageMilli: number;
+  memUsageBytes: number;
+  /** Summed container requests/limits; 0 = not set on any container. */
+  cpuRequestMilli: number;
+  memRequestBytes: number;
+  cpuLimitMilli: number;
+  memLimitBytes: number;
+}
+
+export interface PodResourcesResponse {
+  /** metrics-server serving data. */
+  available: boolean;
+  pods: PodResourceUsage[];
+}
+
+// ---- Namespace overview ----
+
+export interface NamespaceInventoryEntry {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  total: number;
+  /** Entries with a health notion (workloads, PVCs, quotas…). */
+  unhealthy?: number;
+  /** Counted from an installed CRD rather than a builtin API. */
+  custom?: boolean;
+  /** Resource API missing or RBAC-denied. */
+  unavailable?: boolean;
+}
+
+export interface NamespaceQuotaResource {
+  resource: string;
+  used: string;
+  hard: string;
+  /** used/hard as 0-100+, undefined when hard is unparsable or zero. */
+  pct?: number;
+}
+
+export interface NamespaceQuotaStatus {
+  name: string;
+  resources: NamespaceQuotaResource[];
+}
+
+export interface NamespaceOverview {
+  namespaces: string[];
+  /** Namespace phase (Active/Terminating) — only when a single namespace is scoped. */
+  status?: string;
+  inventory: NamespaceInventoryEntry[];
+  workloadHealth: OverviewKindHealth[];
+  issues: OverviewWorkloadIssue[];
+  failingPods: OverviewProblemPod[];
+  quotas: NamespaceQuotaStatus[];
+  warningEvents: OverviewWarningEvent[];
+  /** Operator rollups scoped to this namespace (namespaced resources only). */
+  operators: OperatorRollup[];
 }
 
 // ---- Security audit ----
