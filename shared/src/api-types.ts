@@ -462,6 +462,10 @@ export interface TlsCertInfo {
   sans: string[];
   isCA: boolean;
   selfSigned: boolean;
+  /** Public key algorithm and strength, e.g. "RSA 2048" / "ECDSA prime256v1". */
+  publicKeyAlgorithm?: string;
+  /** Secret data key the certificate came from (tls.crt, ca.crt or ca.tls). */
+  source?: string;
 }
 
 export interface SecretTlsResponse {
