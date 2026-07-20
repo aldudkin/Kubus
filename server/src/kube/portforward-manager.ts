@@ -3,9 +3,10 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { nanoid } from 'nanoid';
 import type { FastifyBaseLogger } from 'fastify';
-import type { KubeObject, PortForwardInfo, PortForwardPreflightResponse, PortForwardRequest } from '@kubus/shared';
+import type { KubeObject, LogTargetKind, PortForwardInfo, PortForwardPreflightResponse, PortForwardRequest } from '@kubus/shared';
 import type { ClusterManager } from './cluster-manager.js';
 import { resourcePath } from './raw-client.js';
+import { resolveTargetPods } from './target-pods.js';
 import { HttpProblem } from '../util/errors.js';
 
 interface ActiveForward {
@@ -14,29 +15,12 @@ interface ActiveForward {
   sockets: Set<net.Socket>;
 }
 
-const WORKLOAD_PLURALS: Partial<Record<PortForwardRequest['kind'], string>> = {
-  deployment: 'deployments',
-  statefulset: 'statefulsets',
-  daemonset: 'daemonsets',
-  replicaset: 'replicasets',
+const WORKLOADS: Partial<Record<PortForwardRequest['kind'], { plural: string; kind: LogTargetKind }>> = {
+  deployment: { plural: 'deployments', kind: 'Deployment' },
+  statefulset: { plural: 'statefulsets', kind: 'StatefulSet' },
+  daemonset: { plural: 'daemonsets', kind: 'DaemonSet' },
+  replicaset: { plural: 'replicasets', kind: 'ReplicaSet' },
 };
-
-interface LabelSelector {
-  matchLabels?: Record<string, string>;
-  matchExpressions?: Array<{ key: string; operator: 'In' | 'NotIn' | 'Exists' | 'DoesNotExist'; values?: string[] }>;
-}
-
-function selectorToString(selector: LabelSelector | undefined): string | undefined {
-  if (!selector) return undefined;
-  const parts = Object.entries(selector.matchLabels ?? {}).map(([k, v]) => `${k}=${v}`);
-  for (const expr of selector.matchExpressions ?? []) {
-    if (expr.operator === 'In') parts.push(`${expr.key} in (${(expr.values ?? []).join(',')})`);
-    else if (expr.operator === 'NotIn') parts.push(`${expr.key} notin (${(expr.values ?? []).join(',')})`);
-    else if (expr.operator === 'Exists') parts.push(expr.key);
-    else if (expr.operator === 'DoesNotExist') parts.push(`!${expr.key}`);
-  }
-  return parts.length ? parts.join(',') : undefined;
-}
 
 function isPodReady(pod: KubeObject): boolean {
   const status = pod.status as { phase?: string; conditions?: Array<{ type?: string; status?: string }> } | undefined;
@@ -178,14 +162,11 @@ export class PortForwardManager extends EventEmitter {
     if (req.kind === 'pod') return { pod: req.name, port: req.remotePort };
     const handle = this.clusters.get(ctx);
 
-    const workloadPlural = WORKLOAD_PLURALS[req.kind];
-    if (workloadPlural) {
-      const workload = await handle.raw.json<KubeObject>(resourcePath('apps', 'v1', workloadPlural, { namespace: req.namespace, name: req.name }));
-      const selector = selectorToString((workload.spec as { selector?: LabelSelector } | undefined)?.selector);
-      if (!selector) throw new HttpProblem(422, `${req.kind} "${req.namespace}/${req.name}" has no pod selector`);
-      const query = new URLSearchParams({ labelSelector: selector });
-      const pods = await handle.raw.json<{ items?: KubeObject[] }>(resourcePath('', 'v1', 'pods', { namespace: req.namespace, query }));
-      const candidates = (pods.items ?? []).filter((p) => !p.metadata.deletionTimestamp);
+    const workload = WORKLOADS[req.kind];
+    if (workload) {
+      const target = await handle.raw.json<KubeObject>(resourcePath('apps', 'v1', workload.plural, { namespace: req.namespace, name: req.name }));
+      const pods = await resolveTargetPods(handle, target, workload.kind, req.namespace);
+      const candidates = pods.filter((p) => !p.metadata.deletionTimestamp);
       const pod = candidates.find(isPodReady) ?? candidates[0];
       if (!pod) throw new HttpProblem(503, `${req.kind} "${req.namespace}/${req.name}" has no running pods`);
       return { pod: pod.metadata.name, port: req.remotePort };
