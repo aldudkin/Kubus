@@ -14,6 +14,7 @@ import { joinLabelSelector, splitLabelSelector } from '../label-selector.js';
 import { SmartFilterInput } from './SmartFilterInput.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from './CellCopy.js';
 import type { MetricsLookup } from './columns.js';
+import { podSummary } from '../kube-display.js';
 import { useUiPrefsStore } from '../state/prefs.js';
 import { useQuickSearchShortcut } from './quick-search.js';
 
@@ -261,7 +262,17 @@ export function ResourceTable({
         columns={gridColumns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
-        getRowClassName={(params) => (params.id === activeRowId ? 'kubus-active-resource-row' : '')}
+        getRowClassName={(params) => {
+          const classes: string[] = [];
+          if (params.id === activeRowId) classes.push('kubus-active-resource-row');
+          // Finished pods stay listed (and filterable) but recede visually so
+          // the running set stands out; hover restores full contrast.
+          if (kind === 'Pod') {
+            const status = podSummary(params.row.obj).status;
+            if (status === 'Succeeded' || status === 'Completed') classes.push('kubus-muted-row');
+          }
+          return classes.join(' ');
+        }}
         density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
         // On overlay-scrollbar platforms the grid measures the native
         // scrollbar as 0px and floats its own on top of the last column;
@@ -329,6 +340,8 @@ export function ResourceTable({
             bgcolor: 'action.selected',
             '&:hover': { bgcolor: 'action.selected' },
           },
+          '& .MuiDataGrid-row.kubus-muted-row': { opacity: 0.55, transition: 'opacity 120ms' },
+          '& .MuiDataGrid-row.kubus-muted-row:hover, & .MuiDataGrid-row.kubus-muted-row:focus-within': { opacity: 1 },
           ...copyCellGridSx,
         }}
       />
