@@ -20,6 +20,8 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
 import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
@@ -65,6 +67,7 @@ import { FileCopyDialog } from './FileCopyDialog.js';
 import { TriggerCronJobDialog } from './TriggerCronJobDialog.js';
 import { PortForwardDialog, isForwardableKind } from './PortForwardDialog.js';
 import { podContainerNames } from '../kube-display.js';
+import { splitImageRef } from '../image-ref.js';
 import { kindListPath } from '../resource-links.js';
 
 export interface RowActionTarget {
@@ -770,16 +773,33 @@ interface PodTemplateContainer {
   image?: string;
 }
 
-function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActionTarget; onClose: () => void; onDone: (t: string) => void; onError: (e: unknown) => void }) {
+export function SetImageDialog({
+  target,
+  initialContainer,
+  onClose,
+  onDone,
+  onError,
+}: {
+  target: RowActionTarget;
+  initialContainer?: string;
+  onClose: () => void;
+  onDone: (t: string) => void;
+  onError: (e: unknown) => void;
+}) {
   const setImage = useSetImage();
   const podSpec = (target.obj.spec as { template?: { spec?: { containers?: PodTemplateContainer[]; initContainers?: PodTemplateContainer[] } } })?.template?.spec;
   const containers = [
     ...(podSpec?.containers ?? []).map((c) => ({ ...c, init: false })),
     ...(podSpec?.initContainers ?? []).map((c) => ({ ...c, init: true })),
   ];
-  const [selected, setSelected] = useState(containers[0]?.name ?? '');
+  const first = containers.find((c) => c.name === initialContainer) ?? containers[0];
+  const [selected, setSelected] = useState(first?.name ?? '');
   const chosen = containers.find((c) => c.name === selected);
-  const [image, setImageValue] = useState(chosen?.image ?? '');
+  const parsed = chosen?.image ? splitImageRef(chosen.image) : undefined;
+  const [mode, setMode] = useState<'tag' | 'image'>(first?.image ? 'tag' : 'image');
+  const [tag, setTag] = useState(first?.image ? splitImageRef(first.image).tag ?? '' : '');
+  const [image, setImageValue] = useState(first?.image ?? '');
+  const finalImage = mode === 'tag' && parsed ? (tag.trim() ? `${parsed.repo}:${tag.trim()}` : '') : image.trim();
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle>Set image — {target.obj.metadata.name}</DialogTitle>
@@ -793,7 +813,10 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
             onChange={(e) => {
               const name = e.target.value;
               setSelected(name);
-              setImageValue(containers.find((c) => c.name === name)?.image ?? '');
+              const img = containers.find((c) => c.name === name)?.image;
+              setImageValue(img ?? '');
+              setTag(img ? splitImageRef(img).tag ?? '' : '');
+              if (!img) setMode('image');
             }}
           >
             {containers.map((c) => (
@@ -804,13 +827,37 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
             ))}
           </Select>
         </FormControl>
-        <TextField autoFocus fullWidth label="Image" value={image} onChange={(e) => setImageValue(e.target.value)} helperText={chosen?.image ? `Current: ${chosen.image}` : undefined} />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={mode}
+          onChange={(_e, v) => {
+            if (v) setMode(v as 'tag' | 'image');
+          }}
+        >
+          <ToggleButton value="tag" disabled={!parsed}>
+            Tag only
+          </ToggleButton>
+          <ToggleButton value="image">Full image</ToggleButton>
+        </ToggleButtonGroup>
+        {mode === 'tag' && parsed ? (
+          <TextField
+            autoFocus
+            fullWidth
+            label="Tag"
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            helperText={`Applies ${parsed.repo}:${tag.trim() || '<tag>'}${parsed.digest ? ' — replaces the digest pin' : ''}`}
+          />
+        ) : (
+          <TextField autoFocus fullWidth label="Image" value={image} onChange={(e) => setImageValue(e.target.value)} helperText={chosen?.image ? `Current: ${chosen.image}` : undefined} />
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
-          disabled={setImage.isPending || !image.trim() || !chosen}
+          disabled={setImage.isPending || !finalImage || !chosen}
           onClick={() =>
             setImage.mutate(
               {
@@ -820,14 +867,14 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
                   namespace: target.obj.metadata.namespace ?? '',
                   name: target.obj.metadata.name,
                   container: selected,
-                  image: image.trim(),
+                  image: finalImage,
                   initContainer: chosen?.init || undefined,
                 },
               },
               {
                 onSuccess: () => {
                   onClose();
-                  onDone(`Set ${selected} image to ${image.trim()}`);
+                  onDone(`Set ${selected} image to ${finalImage}`);
                 },
                 onError: (e) => {
                   onClose();
