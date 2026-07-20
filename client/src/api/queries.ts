@@ -714,7 +714,7 @@ export function useRolloutHistory(sel: { ctx: string; kind: string; namespace?: 
       const params = new URLSearchParams({ kind: sel!.kind, namespace: sel!.namespace ?? '', name: sel!.name });
       return apiFetch<RolloutRevision[]>(`/api/contexts/${encodeURIComponent(sel!.ctx)}/detail/rollout-history?${params}`);
     },
-    enabled: !!sel && (sel.kind === 'Deployment' || sel.kind === 'StatefulSet'),
+    enabled: !!sel && (sel.kind === 'Deployment' || sel.kind === 'StatefulSet' || sel.kind === 'DaemonSet'),
     refetchInterval: useRefetchInterval(15_000),
   });
 }

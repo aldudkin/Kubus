@@ -368,7 +368,7 @@ export interface RerunJobRequest {
 }
 
 export interface RolloutUndoRequest {
-  kind: 'Deployment' | 'StatefulSet';
+  kind: 'Deployment' | 'StatefulSet' | 'DaemonSet';
   namespace: string;
   name: string;
   /** Omitted: roll back to the latest non-current revision. */

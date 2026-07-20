@@ -60,7 +60,7 @@ export function registerDetailRoutes(app: FastifyInstance, ctx: AppContext): voi
       try {
         const { kind, namespace, name } = req.query;
         if (!kind || !namespace || !name) throw new HttpProblem(422, 'kind, namespace and name are required');
-        if (kind !== 'Deployment' && kind !== 'StatefulSet') throw new HttpProblem(422, 'kind must be Deployment or StatefulSet');
+        if (kind !== 'Deployment' && kind !== 'StatefulSet' && kind !== 'DaemonSet') throw new HttpProblem(422, 'kind must be Deployment, StatefulSet or DaemonSet');
         const handle = ctx.clusters.get(req.params.ctx);
         return await getRolloutHistory(handle, kind, namespace, name);
       } catch (err) {
