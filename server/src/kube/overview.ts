@@ -200,7 +200,7 @@ export function collectWarningEvents(events: KubeObject[], now: number, kinds: R
 function resolveInvolvedGvr(
   kinds: ResourceKindInfo[],
   involved: { apiVersion?: string; kind?: string } | undefined,
-): { group: string; version: string; plural: string } | undefined {
+): { group: string; version: string; plural: string; namespaced: boolean } | undefined {
   const kind = involved?.kind;
   if (!kind) return undefined;
   const byKind = kinds.filter((k) => k.kind === kind);
@@ -218,7 +218,7 @@ function resolveInvolvedGvr(
     inGroup[0] ??
     byKind.find((k) => !k.custom) ??
     byKind[0];
-  return match ? { group: match.group, version: match.version, plural: match.plural } : undefined;
+  return match ? { group: match.group, version: match.version, plural: match.plural, namespaced: match.namespaced } : undefined;
 }
 
 function eventTime(e: KubeObject): string {

@@ -74,7 +74,8 @@ export function WarningEventsCard({ ctx, events }: { ctx: string; events: Overvi
       <Stack spacing={0.5}>
         {events.slice(0, 15).map((e) => {
           const gvr = e.involvedGvr ?? gvkForKind(e.involvedKind) ?? kindFromDiscovery(e.involvedKind);
-          const label = `${e.involvedKind}/${e.namespace ? `${e.namespace}/` : ''}${e.involvedName}`;
+          const namespace = gvr?.namespaced === false ? undefined : e.namespace || undefined;
+          const label = `${e.involvedKind}/${namespace ? `${namespace}/` : ''}${e.involvedName}`;
           return (
             <Typography key={`${e.namespace}/${e.involvedKind}/${e.involvedName}/${e.reason}/${e.lastTimestamp ?? ''}/${e.message}`} variant="body2">
               <Typography component="span" variant="body2" sx={{ color: 'warning.main', fontWeight: 600 }}>
@@ -92,7 +93,7 @@ export function WarningEventsCard({ ctx, events }: { ctx: string; events: Overvi
               {gvr ? (
                 <Link
                   component={RouterLink}
-                  to={kindListPath(gvr, { sel: { ctx, namespace: e.namespace || undefined, name: e.involvedName } })}
+                  to={kindListPath(gvr, { sel: { ctx, namespace, name: e.involvedName } })}
                   underline="hover"
                   sx={{ fontWeight: 500 }}
                 >
