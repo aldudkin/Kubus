@@ -11,6 +11,8 @@ minimumReleaseAge: 1440
 # pathe is an ESM drop-in for node:path covering every function the worker uses.
 overrides:
   "monaco-yaml>path-browserify": "npm:pathe@^2.0.3"
+  # Monaco 0.55.1 pins an older DOMPurify with known XSS vulnerabilities.
+  "monaco-editor>dompurify": "^3.4.12"
 allowBuilds:
   esbuild: true
   electron: true
