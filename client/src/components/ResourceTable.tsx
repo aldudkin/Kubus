@@ -110,15 +110,17 @@ export function ResourceTable({
   // Visibility and sort are driven straight from the prefs store (keyed by
   // tableId), so instance reuse across tables resolves the right model and
   // external writes — a saved-view restore — apply to a mounted table
-  // immediately. A saved model wins over the default-hidden set. Tables
+  // immediately. A saved model wins per field, but default-hidden columns it
+  // has never seen (added after the model was saved) stay hidden. Tables
   // without a tableId fall back to local state.
   const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
   const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
   const [localVisibility, setLocalVisibility] = useState<GridColumnVisibilityModel | undefined>(undefined);
-  const visibility = useMemo<GridColumnVisibilityModel>(
-    () => (tableId ? storedVisibility : localVisibility) ?? Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []),
-    [tableId, storedVisibility, localVisibility, hiddenKey],
-  );
+  const visibility = useMemo<GridColumnVisibilityModel>(() => {
+    const defaults: GridColumnVisibilityModel = Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
+    const saved = tableId ? storedVisibility : localVisibility;
+    return saved ? { ...defaults, ...saved } : defaults;
+  }, [tableId, storedVisibility, localVisibility, hiddenKey]);
   const handleVisibilityChange = useCallback(
     (model: GridColumnVisibilityModel) => {
       if (tableId) setStoredVisibility(tableId, model);
