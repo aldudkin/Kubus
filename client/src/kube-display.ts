@@ -117,6 +117,21 @@ function nodeGoodConditionStatus(type: string): string {
   return type === 'Ready' ? 'True' : 'False';
 }
 
+/**
+ * HPA conditions that indicate scaling is blocked or capped (empty when
+ * healthy): AbleToScale/ScalingActive are bad when False, ScalingLimited is
+ * bad when True (replica count pinned at min/max).
+ */
+export function hpaProblems(hpa: KubeObject): string {
+  const conditions = (hpa.status as { conditions?: Array<{ type?: string; status?: string; reason?: string }> } | undefined)?.conditions ?? [];
+  return conditions
+    .flatMap((c) => {
+      const bad = c.type === 'ScalingLimited' ? c.status === 'True' : c.status === 'False';
+      return bad && c.type ? [`${c.type}${c.reason ? ` (${c.reason})` : ''}`] : [];
+    })
+    .join(', ');
+}
+
 export function servicePorts(svc: KubeObject): string {
   const ports = (svc.spec as { ports?: Array<{ port: number; protocol?: string; nodePort?: number }> })?.ports ?? [];
   return ports.map((p) => `${p.port}${p.nodePort ? `:${p.nodePort}` : ''}/${p.protocol ?? 'TCP'}`).join(', ');
@@ -135,6 +150,49 @@ export function ingressHosts(ing: KubeObject): string {
 
 export function dataKeyCount(obj: KubeObject): number {
   return Object.keys((obj.data as Record<string, unknown> | undefined) ?? {}).length;
+}
+
+/** Served CRD versions in spec order, the storage version marked with an asterisk. */
+export function crdVersions(crd: KubeObject): string {
+  const versions = (crd.spec as { versions?: Array<{ name: string; served?: boolean; storage?: boolean }> })?.versions ?? [];
+  const served = versions.filter((v) => v.served !== false);
+  return (served.length ? served : versions).map((v) => `${v.name}${v.storage ? '*' : ''}`).join(', ');
+}
+
+/**
+ * Coarse CRD lifecycle status for the list Status column. Empty until the
+ * apiserver reports conditions so a just-created CRD shows no chip.
+ */
+export function crdStatus(crd: KubeObject): string {
+  if (crd.metadata.deletionTimestamp) return 'Terminating';
+  const conditions = (crd.status as { conditions?: Array<{ type?: string; status?: string }> } | undefined)?.conditions ?? [];
+  const has = (type: string, status: string) => conditions.some((c) => c.type === type && c.status === status);
+  if (has('Established', 'True')) return 'Active';
+  if (has('NamesAccepted', 'False')) return 'NameConflict';
+  return conditions.length ? 'NotEstablished' : '';
+}
+
+/**
+ * Coarse Job lifecycle phase for the list Status column. Terminal conditions
+ * win; otherwise suspension beats activity so a paused Job doesn't read as
+ * pending work.
+ */
+export function jobPhase(job: KubeObject): string {
+  const spec = job.spec as { suspend?: boolean } | undefined;
+  const status = job.status as { conditions?: Array<{ type?: string; status?: string }>; active?: number } | undefined;
+  const has = (type: string) => (status?.conditions ?? []).some((c) => c.type === type && c.status === 'True');
+  if (has('Failed')) return 'Failed';
+  if (has('Complete')) return 'Complete';
+  if (spec?.suspend) return 'Suspended';
+  if ((status?.active ?? 0) > 0) return 'Running';
+  return 'Pending';
+}
+
+/** The object's controlling owner, falling back to the first ownerReference. */
+export function ownerReference(obj: KubeObject): { kind: string; name: string } | undefined {
+  const refs = obj.metadata.ownerReferences ?? [];
+  const ref = refs.find((r) => r.controller) ?? refs[0];
+  return ref ? { kind: ref.kind, name: ref.name } : undefined;
 }
 
 export function jobStatus(job: KubeObject): { completions: string; duration: string } {
@@ -281,6 +339,8 @@ export interface ContainerResources {
   memRequestBytes?: number;
   cpuLimitMilli?: number;
   memLimitBytes?: number;
+  ephemeralRequestBytes?: number;
+  ephemeralLimitBytes?: number;
 }
 
 export function containerResources(c: ContainerWithResources): ContainerResources {
@@ -289,6 +349,8 @@ export function containerResources(c: ContainerWithResources): ContainerResource
     memRequestBytes: quantityBytes(c.resources?.requests?.memory),
     cpuLimitMilli: quantityMilli(c.resources?.limits?.cpu),
     memLimitBytes: quantityBytes(c.resources?.limits?.memory),
+    ephemeralRequestBytes: quantityBytes(c.resources?.requests?.['ephemeral-storage']),
+    ephemeralLimitBytes: quantityBytes(c.resources?.limits?.['ephemeral-storage']),
   };
 }
 

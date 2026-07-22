@@ -17,23 +17,18 @@ import StarBorderIcon from '@mui/icons-material/StarBorder';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import KeyboardCommandKeyIcon from '@mui/icons-material/KeyboardCommandKey';
 import type { FavoriteItem, ResourceRef, SearchResult, SearchResultKind } from '@kubus/shared';
-import { groupToPath } from '@kubus/shared';
 import { useNavigate } from 'react-router';
+import { detailPathForRef } from '../resource-links.js';
 import { useGlobalSearch } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useDockStore } from '../state/dock.js';
+import { useTabsStore } from '../state/tabs.js';
+import { useUiStore } from '../state/ui.js';
+import { toggleNavRail } from '../shortcuts.js';
 import { showToast } from '../state/toast.js';
 import { actionsForRef, usePaletteRunner, type PaletteAction } from '../actions/resource-actions.js';
-
-function pathForRef(ref: ResourceRef): string {
-  return `/r/${groupToPath(ref.group)}/${ref.version}/${ref.plural}`;
-}
-
-function detailPathForRef(ref: ResourceRef): string {
-  const sel = `${ref.ctx}|${ref.namespace ?? ''}|${ref.name}`;
-  return `${pathForRef(ref)}?sel=${encodeURIComponent(sel)}`;
-}
+import { HOTKEY_MOD_LABEL } from '../platform.js';
 
 function favoriteFromResult(result: SearchResult): FavoriteItem {
   return {
@@ -45,23 +40,41 @@ function favoriteFromResult(result: SearchResult): FavoriteItem {
   };
 }
 
+interface CommandDeps {
+  navigate: (path: string) => void;
+  toggleTheme: () => void;
+  toggleDock: () => void;
+  toggleNav: () => void;
+  openSettings: () => void;
+  openShortcuts: () => void;
+  newTab: () => void;
+  reopenTab: () => void;
+}
+
 interface StaticCommand {
   id: string;
   title: string;
   subtitle?: string;
-  run: (deps: { navigate: (path: string) => void; toggleTheme: () => void; toggleDock: () => void }) => void;
+  run: (deps: CommandDeps) => void;
 }
 
 const STATIC_COMMANDS: StaticCommand[] = [
   { id: 'cmd:theme', title: 'Toggle dark / light mode', run: (d) => d.toggleTheme() },
   { id: 'cmd:dock', title: 'Toggle terminal dock', run: (d) => d.toggleDock() },
+  { id: 'cmd:nav', title: 'Toggle navigation rail', run: (d) => d.toggleNav() },
+  { id: 'cmd:newtab', title: 'New tab', run: (d) => d.newTab() },
+  { id: 'cmd:reopen', title: 'Reopen closed tab', run: (d) => d.reopenTab() },
+  { id: 'cmd:settings', title: 'Open settings', run: (d) => d.openSettings() },
+  { id: 'cmd:shortcuts', title: 'Keyboard shortcuts', run: (d) => d.openShortcuts() },
   { id: 'cmd:overview', title: 'Go to Overview', run: (d) => d.navigate('/') },
   { id: 'cmd:events', title: 'Go to Events', run: (d) => d.navigate('/events') },
   { id: 'cmd:topology', title: 'Go to Topology', run: (d) => d.navigate('/topology') },
   { id: 'cmd:metrics', title: 'Go to Metrics', run: (d) => d.navigate('/metrics') },
+  { id: 'cmd:network', title: 'Go to Network', run: (d) => d.navigate('/network') },
   { id: 'cmd:helm', title: 'Go to Helm Releases', run: (d) => d.navigate('/helm') },
   { id: 'cmd:forwards', title: 'Go to Port Forwards', run: (d) => d.navigate('/forwards') },
   { id: 'cmd:diff', title: 'Go to Diff', run: (d) => d.navigate('/diff') },
+  { id: 'cmd:audit', title: 'Go to Audit', run: (d) => d.navigate('/audit') },
 ];
 
 type Row =
@@ -149,11 +162,26 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   const activate = (row: Row) => {
     if (row.type === 'command') {
       row.command.run({
-        navigate,
+        navigate: (path) => void navigate(path),
         toggleTheme,
         toggleDock: () => {
           const { open, setOpen } = useDockStore.getState();
           setOpen(!open);
+        },
+        toggleNav: toggleNavRail,
+        openSettings: () => useUiStore.getState().setSettingsOpen(true),
+        openShortcuts: () => useUiStore.getState().setShortcutsOpen(true),
+        newTab: () => {
+          useTabsStore.getState().openTab('/');
+          void navigate('/');
+        },
+        reopenTab: () => {
+          const before = useTabsStore.getState().activeId;
+          useTabsStore.getState().reopenTab();
+          const s = useTabsStore.getState();
+          if (s.activeId === before) return;
+          const active = s.tabs.find((t) => t.id === s.activeId);
+          if (active) void navigate(active.path);
         },
       });
       closeAll();
@@ -185,6 +213,20 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
     else addFavorite(favoriteFromResult(item));
   };
 
+  // Cmd/Ctrl+Enter opens a result in a new tab, Shift+Enter in a background
+  // tab (the dialog stays open, so several can be queued).
+  const openInNewTab = (row: Row, background: boolean): boolean => {
+    if (row.type !== 'result') return false;
+    const item = row.result;
+    const path = item.ref ? detailPathForRef(item.ref) : item.path ?? '/';
+    useTabsStore.getState().openTab(path, { afterActive: true, activate: !background });
+    if (!background) {
+      void navigate(path);
+      closeAll();
+    }
+    return true;
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -192,10 +234,18 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'PageDown' || e.key === 'PageUp') {
+      e.preventDefault();
+      setActiveIndex((i) => (e.key === 'PageDown' ? Math.min(i + 8, rows.length - 1) : Math.max(i - 8, 0)));
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const row = rows[activeIndex];
-      if (row) activate(row);
+      if (!row) return;
+      if ((e.metaKey || e.ctrlKey || e.shiftKey) && openInNewTab(row, e.shiftKey)) return;
+      activate(row);
+    } else if (e.key === 'ArrowLeft' && stage && query === '') {
+      e.preventDefault();
+      setStage(null);
     } else if ((e.key === 'Tab' || e.key === 'ArrowRight') && !stage) {
       const row = rows[activeIndex];
       if (row?.type === 'result' && row.result.ref) {
@@ -225,7 +275,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
       : query.trim().length > 1
         ? isFetching
           ? 'Searching…'
-          : `${rows.length} results — Tab for actions, > for commands`
+          : `${rows.length} results — Tab actions · ${HOTKEY_MOD_LABEL}↵ new tab · > commands`
         : favorites.length
           ? 'Favorites — type to search, > for commands'
           : 'Type to search, > for commands';
@@ -281,7 +331,12 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
                         secondary={row.result.subtitle}
                         slotProps={{ primary: { noWrap: true }, secondary: { noWrap: true } }}
                       />
-                      <Chip size="small" label={row.result.kind} color={RESULT_CHIP_COLOR[row.result.kind]} variant="outlined" sx={{ mr: 0.5 }} />
+                      {/* Resources dominate the results and already name their
+                          kind in the title — a chip on every row is noise, so
+                          only the rarer kind/page results get tagged. */}
+                      {row.result.kind !== 'resource' && (
+                        <Chip size="small" label={row.result.kind} color={RESULT_CHIP_COLOR[row.result.kind]} variant="outlined" sx={{ mr: 0.5 }} />
+                      )}
                       {row.result.ref && (
                         <Tooltip title="Actions (Tab)">
                           <IconButton

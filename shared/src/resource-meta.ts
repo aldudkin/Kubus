@@ -91,6 +91,15 @@ export const BUILTIN_NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+/**
+ * Builtin kinds reachable outside the nav groups (Overview cards, the
+ * Custom Resources → Definitions entry). Registered in the GVK lookups so
+ * their lists get kind-specific behavior, but not shown as nav groups.
+ */
+const EXTRA_BUILTIN_KINDS: GVK[] = [
+  { group: 'apiextensions.k8s.io', version: 'v1', plural: 'customresourcedefinitions', kind: 'CustomResourceDefinition', namespaced: false },
+];
+
 /** Semantic column ids per kind; the client maps these to renderers. */
 export const KIND_COLUMNS: Record<string, string[]> = {
   Pod: ['name', 'namespace', 'cluster', 'ready', 'podStatus', 'restarts', 'cpu', 'memory', 'node', 'age'],
@@ -98,8 +107,8 @@ export const KIND_COLUMNS: Record<string, string[]> = {
   StatefulSet: ['name', 'namespace', 'cluster', 'workloadReady', 'cpu', 'memory', 'age'],
   DaemonSet: ['name', 'namespace', 'cluster', 'dsDesired', 'dsReady', 'cpu', 'memory', 'age'],
   ReplicaSet: ['name', 'namespace', 'cluster', 'workloadReady', 'cpu', 'memory', 'age'],
-  Job: ['name', 'namespace', 'cluster', 'jobCompletions', 'jobDuration', 'age'],
-  CronJob: ['name', 'namespace', 'cluster', 'cronSchedule', 'cronSuspend', 'cronLastSchedule', 'age'],
+  Job: ['name', 'namespace', 'cluster', 'jobStatus', 'jobCompletions', 'jobDuration', 'jobOwner', 'age'],
+  CronJob: ['name', 'namespace', 'cluster', 'cronSchedule', 'cronSuspend', 'cronLastSchedule', 'cronNextRun', 'age'],
   Service: ['name', 'namespace', 'cluster', 'svcType', 'svcClusterIP', 'svcLoadBalancerIP', 'svcPorts', 'age'],
   Ingress: ['name', 'namespace', 'cluster', 'ingressClass', 'ingressHosts', 'age'],
   ConfigMap: ['name', 'namespace', 'cluster', 'dataKeys', 'age'],
@@ -124,10 +133,12 @@ export const KIND_COLUMNS: Record<string, string[]> = {
     'nodeExternalIp',
     'nodeTaints',
     'nodeConditions',
+    'nodeProviderID',
   ],
   Namespace: ['name', 'cluster', 'nsStatus', 'age'],
+  CustomResourceDefinition: ['name', 'cluster', 'crdKind', 'crdGroup', 'crdScope', 'crdVersions', 'crdStatus', 'age'],
   Event: ['eventType', 'eventReason', 'eventObject', 'eventMessage', 'namespace', 'cluster', 'eventCount', 'eventLastSeen'],
-  HorizontalPodAutoscaler: ['name', 'namespace', 'cluster', 'hpaTarget', 'hpaMinMax', 'hpaReplicas', 'age'],
+  HorizontalPodAutoscaler: ['name', 'namespace', 'cluster', 'hpaTarget', 'hpaMinMax', 'hpaReplicas', 'hpaConditions', 'age'],
   ServiceAccount: ['name', 'namespace', 'cluster', 'age'],
 };
 
@@ -151,12 +162,10 @@ export function pluralLabel(kind: string): string {
 
 const GVK_BY_KIND = new Map<string, GVK>();
 const GVK_BY_RESOURCE = new Map<string, GVK>();
-for (const navGroup of BUILTIN_NAV_GROUPS) {
-  for (const gvk of navGroup.kinds) {
-    if (!GVK_BY_KIND.has(gvk.kind)) GVK_BY_KIND.set(gvk.kind, gvk);
-    const key = `${gvk.group}/${gvk.version}/${gvk.plural}`;
-    if (!GVK_BY_RESOURCE.has(key)) GVK_BY_RESOURCE.set(key, gvk);
-  }
+for (const gvk of [...BUILTIN_NAV_GROUPS.flatMap((navGroup) => navGroup.kinds), ...EXTRA_BUILTIN_KINDS]) {
+  if (!GVK_BY_KIND.has(gvk.kind)) GVK_BY_KIND.set(gvk.kind, gvk);
+  const key = `${gvk.group}/${gvk.version}/${gvk.plural}`;
+  if (!GVK_BY_RESOURCE.has(key)) GVK_BY_RESOURCE.set(key, gvk);
 }
 
 /** Look up the GVK for a builtin kind (e.g. to navigate to a related resource). */

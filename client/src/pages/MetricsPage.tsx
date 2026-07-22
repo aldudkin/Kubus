@@ -1,6 +1,9 @@
 import { useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
@@ -16,6 +19,7 @@ import Typography from '@mui/material/Typography';
 import Skeleton from '@mui/material/Skeleton';
 import { alpha, useTheme } from '@mui/material/styles';
 import QueryStatsOutlinedIcon from '@mui/icons-material/QueryStatsOutlined';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
 import SdStorageOutlinedIcon from '@mui/icons-material/SdStorageOutlined';
 import DnsOutlinedIcon from '@mui/icons-material/DnsOutlined';
@@ -23,21 +27,16 @@ import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
 import { BarChart } from '@mui/x-charts/BarChart';
 import { LineChart } from '@mui/x-charts/LineChart';
 import type { ClusterMetricsSummary, MetricsSeriesEntry } from '@kubus/shared';
-import { useMetricsServerStatus, useMetricsSummary } from '../api/queries.js';
+import { invalidateMetricsServer, useMetricsServerStatus, useMetricsSummary } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
 import { ClusterSectionHeader } from '../components/ClusterSectionHeader.js';
 import { NoClustersState } from '../components/NoClustersState.js';
 import { InstallMetricsServerButton, UninstallMetricsServerButton } from '../components/MetricsServerControls.js';
 import { formatBytes, formatCpu } from '../components/format.js';
+import { SERIES_DARK, SERIES_LIGHT, timeTickFormatter } from '../components/chart-theme.js';
 
-// Categorical palette from the validated dataviz reference set (adjacent-pair
-// CVD-safe in this order — do not re-order or cycle past 8 series).
-const SERIES_LIGHT = ['#2a78d6', '#008300', '#e87ba4', '#eda100', '#1baf7a', '#eb6834', '#4a3aa7', '#e34948'];
-const SERIES_DARK = ['#3987e5', '#008300', '#d55181', '#c98500', '#199e70', '#d95926', '#9085e9', '#e66767'];
 const MAX_NODE_SERIES = 8;
 const MAX_NAMESPACE_BARS = 10;
-
-const timeFormatter = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 export function MetricsPage() {
   const selected = useClustersStore((s) => s.selected);
@@ -56,10 +55,11 @@ export function MetricsPage() {
 }
 
 function ClusterMetricsSection({ ctx }: { ctx: string }) {
-  // Poll status faster than the nav does: this page is where install progress is watched.
-  const { data: status, error: statusError } = useMetricsServerStatus(ctx, { refetchMs: 5_000 });
+  // The hook polls fast on its own while an install is settling.
+  const { data: status, error: statusError } = useMetricsServerStatus(ctx);
   const { data: summary, error: summaryError } = useMetricsSummary(ctx);
   const error = statusError ?? summaryError;
+  const qc = useQueryClient();
 
   const installed = status?.installed ?? false;
   const available = summary?.available ?? false;
@@ -76,6 +76,12 @@ function ClusterMetricsSection({ ctx }: { ctx: string }) {
             label={available ? 'collecting' : status?.ready ? 'waiting for samples' : 'starting'}
           />
         )}
+        {/* One-shot refetch, independent of the cadence preset — works while polling is paused. */}
+        <Tooltip title="Refresh metrics now">
+          <IconButton size="small" aria-label={`Refresh metrics for ${ctx}`} onClick={() => invalidateMetricsServer(qc, ctx)}>
+            <RefreshIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Box sx={{ flex: 1 }} />
         {installed && <UninstallMetricsServerButton ctx={ctx} status={status} />}
       </ClusterSectionHeader>
@@ -261,7 +267,7 @@ function UsageLineChart({
         area,
         valueFormatter: (v: number | null) => (v === null ? '' : fmt(v)),
       }))}
-      xAxis={[{ data: times, scaleType: 'time', valueFormatter: timeFormatter }]}
+      xAxis={[{ data: times, scaleType: 'time', valueFormatter: timeTickFormatter(times) }]}
       yAxis={[{ min: 0, valueFormatter: (v: number) => fmt(v), width: 56 }]}
       grid={{ horizontal: true }}
       hideLegend={hideLegend ?? entries.length < 2}
@@ -376,7 +382,7 @@ function StatTile({ icon, label, value, sub }: { icon: React.ReactElement; label
             sx={(theme) => ({
               width: 36,
               height: 36,
-              borderRadius: 2,
+              borderRadius: 1.5,
               flexShrink: 0,
               display: 'grid',
               placeItems: 'center',

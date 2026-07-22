@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
 import InputLabel from '@mui/material/InputLabel';
 import LinearProgress from '@mui/material/LinearProgress';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -16,9 +20,13 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
 import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
+import AddIcon from '@mui/icons-material/Add';
+import RemoveIcon from '@mui/icons-material/Remove';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SubjectIcon from '@mui/icons-material/Subject';
 import TerminalIcon from '@mui/icons-material/Terminal';
@@ -34,7 +42,11 @@ import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import BlockIcon from '@mui/icons-material/Block';
 import DownhillSkiingIcon from '@mui/icons-material/DownhillSkiing';
-import { gvkForResource, type KubeObject, type LogTargetKind } from '@kubus/shared';
+import SpeedIcon from '@mui/icons-material/Speed';
+import StarIcon from '@mui/icons-material/Star';
+import StarBorderIcon from '@mui/icons-material/StarBorder';
+import LinkIcon from '@mui/icons-material/Link';
+import { gvkForResource, type DebugProfile, type KubeObject, type LogTargetKind } from '@kubus/shared';
 import {
   resolveLogTargetPods,
   useCordon,
@@ -47,17 +59,21 @@ import {
   useRolloutRestart,
   useScale,
   useSetImage,
-  useStartPortForward,
   useSuspendCronJob,
-  useTriggerCronJob,
 } from '../api/queries.js';
 import { watchClient } from '../api/ws/watch-client.js';
 import { useDockStore, dockTabId, type DockTab } from '../state/dock.js';
 import { useIsProtected } from '../state/clusters.js';
-import { showToast } from '../state/toast.js';
+import { useNavigationStore } from '../state/navigation.js';
+import { showErrorToast, showToast } from '../state/toast.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { FileCopyDialog } from './FileCopyDialog.js';
+import { TriggerCronJobDialog } from './TriggerCronJobDialog.js';
+import { PortForwardDialog, isForwardableKind } from './PortForwardDialog.js';
 import { podContainerNames } from '../kube-display.js';
+import { splitImageRef } from '../image-ref.js';
+import { copyToClipboard } from '../clipboard.js';
+import { detailPathForRef, favoriteForRef, kindListPath, shareLinkForPath } from '../resource-links.js';
 
 export interface RowActionTarget {
   ctx: string;
@@ -76,7 +92,7 @@ export interface RowActionMenuProps {
   onClose: () => void;
 }
 
-const LOG_TARGET_KINDS = new Set<string>(['Pod', 'Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Service']);
+const LOG_TARGET_KINDS = new Set<string>(['Pod', 'Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Service', 'Job']);
 
 export function isLogTargetKind(kind: string): kind is LogTargetKind {
   return LOG_TARGET_KINDS.has(kind);
@@ -92,13 +108,14 @@ async function openLogsForTarget(target: RowActionTarget, addTab: (tab: DockTab)
   if (!namespace) throw new Error(`${kind} has no namespace`);
   const { pods } = await resolveLogTargetPods({ ctx, group: target.group, version: target.version, plural: target.plural, kind: actionKind, namespace, name });
   if (!pods.length) throw new Error(`No pods found for ${actionKind} ${namespace}/${name}`);
-  const byNamespace = new Map<string, string[]>();
+  const byNamespace = new Map<string, typeof pods>();
   for (const pod of pods) {
-    const names = byNamespace.get(pod.namespace);
-    if (names) names.push(pod.name);
-    else byNamespace.set(pod.namespace, [pod.name]);
+    const namespacePods = byNamespace.get(pod.namespace);
+    if (namespacePods) namespacePods.push(pod);
+    else byNamespace.set(pod.namespace, [pod]);
   }
-  for (const [ns, podNames] of byNamespace) {
+  for (const [ns, namespacePods] of byNamespace) {
+    const podNames = namespacePods.map((pod) => pod.name);
     addTab({
       kind: 'logs',
       id: dockTabId(),
@@ -106,6 +123,8 @@ async function openLogsForTarget(target: RowActionTarget, addTab: (tab: DockTab)
       ctx,
       namespace: ns,
       pods: podNames,
+      sources: namespacePods.map((pod) => ({ pod: pod.name, containers: pod.containers })),
+      target: { kind: actionKind, name },
       follow: true,
     });
   }
@@ -150,6 +169,7 @@ export function RowActions({ target }: { target: RowActionTarget }) {
     <>
       <IconButton
         size="small"
+        aria-label={`Actions for ${target.obj.metadata.name}`}
         onClick={(e) => {
           e.stopPropagation();
           setAnchor(e.currentTarget);
@@ -164,13 +184,12 @@ export function RowActions({ target }: { target: RowActionTarget }) {
 }
 
 export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose }: RowActionMenuProps) {
-  const [dialog, setDialog] = useState<'delete' | 'scale' | 'forward' | 'drain' | 'restart-rs' | 'set-image' | 'debug' | 'node-shell' | 'files' | null>(null);
+  const [dialog, setDialog] = useState<'delete' | 'scale' | 'forward' | 'drain' | 'restart-rs' | 'set-image' | 'debug' | 'node-shell' | 'files' | 'trigger' | null>(null);
   const [logsBusy, setLogsBusy] = useState(false);
 
   const del = useDeleteResource();
   const restart = useRolloutRestart();
   const cordon = useCordon();
-  const trigger = useTriggerCronJob();
   const rerun = useRerunJob();
   const rolloutPause = useRolloutPause();
   const suspendCj = useSuspendCronJob();
@@ -183,17 +202,25 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
   const isProtected = useIsProtected(ctx);
   const close = onClose;
 
+  const resourceRef = { ctx, group: target.group, version: target.version, plural: target.plural, kind, name, namespace };
+  const favorite = favoriteForRef(resourceRef);
+  const isFav = useNavigationStore((s) => s.isFavorite(favorite.id));
+  const addFavorite = useNavigationStore((s) => s.addFavorite);
+  const removeFavorite = useNavigationStore((s) => s.removeFavorite);
+
   const ok = (text: string) => showToast('success', text);
-  const fail = (err: unknown) => showToast('error', err instanceof Error ? err.message : String(err));
+  const fail = (err: unknown) => showErrorToast(err);
 
   const scalable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'ReplicaSet';
+  const navigate = useNavigate();
+  const { scaler } = useOwningScaler(scalable ? target : undefined);
   const restartable = actionKind === 'Deployment' || actionKind === 'StatefulSet' || actionKind === 'DaemonSet';
   const isReplicaSet = actionKind === 'ReplicaSet';
   const isPod = actionKind === 'Pod';
   const isNode = actionKind === 'Node';
   const isCronJob = actionKind === 'CronJob';
   const isJob = actionKind === 'Job';
-  const canForward = isPod || actionKind === 'Service';
+  const canForward = isForwardableKind(actionKind);
   const canViewLogs = isLogTargetKind(actionKind ?? '');
   const unschedulable = isNode && !!(obj.spec as { unschedulable?: boolean })?.unschedulable;
   const cjSuspended = isCronJob && !!(obj.spec as { suspend?: boolean })?.suspend;
@@ -288,7 +315,33 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
             <ListItemText>Port forward…</ListItemText>
           </MenuItem>
         )}
-        {scalable && (
+        {scalable && scaler && (
+          <MenuItem
+            onClick={() => {
+              void navigate(kindListPath(scaler.gvr, { sel: { ctx, namespace, name: scaler.name } }));
+              close();
+            }}
+          >
+            <ListItemIcon>
+              <SpeedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary={scaler.kind === 'ScaledObject' ? 'Open ScaledObject' : 'Open HPA'} secondary={scaler.name} />
+          </MenuItem>
+        )}
+        {scalable && scaler && (
+          <MenuItem
+            onClick={() => {
+              setDialog('scale');
+              close();
+            }}
+          >
+            <ListItemIcon>
+              <OpenInFullIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Override replicas…</ListItemText>
+          </MenuItem>
+        )}
+        {scalable && !scaler && (
           <MenuItem
             onClick={() => {
               setDialog('scale');
@@ -373,14 +426,14 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
         {isCronJob && (
           <MenuItem
             onClick={() => {
-              trigger.mutate({ ctx, body: { namespace: namespace ?? '', name } }, { onSuccess: (r) => ok(`Created job ${r.jobName}`), onError: fail });
+              setDialog('trigger');
               close();
             }}
           >
             <ListItemIcon>
               <PlayArrowIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText>Trigger now</ListItemText>
+            <ListItemText>Trigger now…</ListItemText>
           </MenuItem>
         )}
         {isCronJob && (
@@ -439,6 +492,29 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
             <ListItemText>Drain…</ListItemText>
           </MenuItem>
         )}
+        <MenuItem
+          onClick={() => {
+            if (isFav) removeFavorite(favorite.id);
+            else addFavorite(favorite);
+            close();
+          }}
+        >
+          <ListItemIcon>{isFav ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}</ListItemIcon>
+          <ListItemText>{isFav ? 'Remove favorite' : 'Add to favorites'}</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            void copyToClipboard(shareLinkForPath(detailPathForRef(resourceRef))).then((copied) =>
+              copied ? ok('Link copied') : showToast('error', 'Copy to clipboard failed'),
+            );
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <LinkIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Copy link</ListItemText>
+        </MenuItem>
         <Divider />
         <MenuItem
           onClick={() => {
@@ -535,65 +611,157 @@ export function RowActionMenu({ target, anchorEl, anchorPosition, open, onClose 
           addTab({ kind: 'node-shell', id: dockTabId(), title: `node: ${name}`, ctx, node: name });
         }}
       />
+      {dialog === 'trigger' && <TriggerCronJobDialog ctx={ctx} obj={obj} onClose={() => setDialog(null)} onDone={ok} />}
       {dialog === 'scale' && <ScaleDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'debug' && <DebugDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
       {dialog === 'files' && <FileCopyDialog ctx={ctx} obj={obj} onClose={() => setDialog(null)} />}
       {dialog === 'set-image' && <SetImageDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
-      {dialog === 'forward' && <PortForwardDialog target={target} onClose={() => setDialog(null)} onDone={ok} onError={fail} />}
+      {dialog === 'forward' && <PortForwardDialog ctx={ctx} kind={actionKind ?? kind} obj={obj} onClose={() => setDialog(null)} />}
       {dialog === 'drain' && <DrainDialog target={target} onClose={() => setDialog(null)} />}
     </>
   );
 }
 
 interface HpaSpec {
-  scaleTargetRef?: { kind?: string; name?: string };
+  scaleTargetRef?: { apiVersion?: string; kind?: string; name?: string };
   minReplicas?: number;
   maxReplicas?: number;
 }
 
+interface OwningScaler {
+  /** The resource the user should edit: the ScaledObject when the HPA is KEDA-managed, else the HPA itself. */
+  kind: 'ScaledObject' | 'HorizontalPodAutoscaler';
+  name: string;
+  gvr: { group: string; version: string; plural: string };
+  minReplicas?: number;
+  maxReplicas?: number;
+}
+
+/**
+ * Resolve the HPA or KEDA ScaledObject that owns a workload's replica count, if any.
+ * `pending` covers only the initial lookup; a failed lookup resolves to no scaler so
+ * users without HPA list access can still scale manually.
+ */
+function useOwningScaler(target: RowActionTarget | undefined): { scaler: OwningScaler | undefined; pending: boolean } {
+  const { data: hpas, isLoading } = useResourceList(
+    target
+      ? { ctx: target.ctx, group: 'autoscaling', version: 'v2', plural: 'horizontalpodautoscalers', namespace: target.obj.metadata.namespace }
+      : undefined,
+  );
+  return { scaler: target ? findOwningScaler(target, hpas?.items) : undefined, pending: !!target && isLoading };
+}
+
+function findOwningScaler(target: RowActionTarget, hpas: KubeObject[] | undefined): OwningScaler | undefined {
+  const hpa = hpas?.find((h) => {
+    const ref = (h.spec as HpaSpec | undefined)?.scaleTargetRef;
+    if (ref?.kind !== target.kind || ref.name !== target.obj.metadata.name) return false;
+    const refGroup = ref.apiVersion ? (ref.apiVersion.includes('/') ? ref.apiVersion.split('/')[0] : '') : undefined;
+    return refGroup === undefined || refGroup === target.group;
+  });
+  if (!hpa) return undefined;
+  const spec = hpa.spec as HpaSpec | undefined;
+  const scaledObject =
+    (hpa.metadata.ownerReferences ?? []).find((o) => o.kind === 'ScaledObject')?.name ?? hpa.metadata.labels?.['scaledobject.keda.sh/name'];
+  return scaledObject
+    ? { kind: 'ScaledObject', name: scaledObject, gvr: { group: 'keda.sh', version: 'v1alpha1', plural: 'scaledobjects' }, minReplicas: spec?.minReplicas, maxReplicas: spec?.maxReplicas }
+    : {
+        kind: 'HorizontalPodAutoscaler',
+        name: hpa.metadata.name,
+        gvr: { group: 'autoscaling', version: 'v2', plural: 'horizontalpodautoscalers' },
+        minReplicas: spec?.minReplicas,
+        maxReplicas: spec?.maxReplicas,
+      };
+}
+
 function ScaleDialog({ target, onClose, onDone, onError }: { target: RowActionTarget; onClose: () => void; onDone: (t: string) => void; onError: (e: unknown) => void }) {
   const scale = useScale();
+  const navigate = useNavigate();
   const current = (target.obj.spec as { replicas?: number })?.replicas ?? 0;
   const [replicas, setReplicas] = useState(current);
   const isProtected = useIsProtected(target.ctx);
   const [typed, setTyped] = useState('');
+  // Manual scaling of an autoscaled workload is disabled until explicitly overridden.
+  const [override, setOverride] = useState(false);
+  const { scaler, pending: scalerPending } = useOwningScaler(target);
+  const overrideBlocked = scalerPending || (!!scaler && !override);
   // Scaling a protected cluster's workload to zero is effectively an outage — require typed confirmation.
   const needsConfirm = isProtected && replicas === 0 && current > 0;
   const confirmBlocked = needsConfirm && typed !== target.obj.metadata.name;
-  const { data: hpas } = useResourceList({
-    ctx: target.ctx,
-    group: 'autoscaling',
-    version: 'v2',
-    plural: 'horizontalpodautoscalers',
-    namespace: target.obj.metadata.namespace,
-  });
-  const hpa = hpas?.items.find((h) => {
-    const ref = (h.spec as HpaSpec)?.scaleTargetRef;
-    return ref?.kind === target.kind && ref?.name === target.obj.metadata.name;
-  });
-  const hpaSpec = hpa?.spec as HpaSpec | undefined;
-  const kedaName = hpa?.metadata.labels?.['scaledobject.keda.sh/name'];
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>Scale {target.obj.metadata.name}</DialogTitle>
       <DialogContent>
-        {hpa && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            HorizontalPodAutoscaler <b>{hpa.metadata.name}</b> targets this {target.kind} (min {hpaSpec?.minReplicas ?? 1} / max {hpaSpec?.maxReplicas ?? '?'})
-            {kedaName ? <>, managed by KEDA ScaledObject <b>{kedaName}</b></> : null}. Manual scaling will likely be reverted by the autoscaler.
+        {scaler && (
+          <Alert
+            severity="warning"
+            sx={{ mb: 2 }}
+            action={
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => {
+                  onClose();
+                  void navigate(kindListPath(scaler.gvr, { sel: { ctx: target.ctx, namespace: target.obj.metadata.namespace, name: scaler.name } }));
+                }}
+              >
+                Open
+              </Button>
+            }
+          >
+            Replicas of this {target.kind} are managed by {scaler.kind} <b>{scaler.name}</b> (min {scaler.minReplicas ?? 1} / max{' '}
+            {scaler.maxReplicas ?? '?'}). To scale permanently, edit the {scaler.kind === 'ScaledObject' ? 'ScaledObject' : 'HPA'} instead.
           </Alert>
         )}
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Current replicas: {current}
         </Typography>
+        {scaler && (
+          <FormControlLabel
+            sx={{ mb: 1 }}
+            control={<Checkbox checked={override} onChange={(e) => setOverride(e.target.checked)} />}
+            label={
+              <Typography variant="body2">
+                Override the autoscaler — this change is temporary and will be reverted the next time it reconciles.
+              </Typography>
+            }
+          />
+        )}
         <TextField
           autoFocus
           fullWidth
           type="number"
           label="Replicas"
+          disabled={overrideBlocked}
           value={replicas}
           onChange={(e) => setReplicas(Math.max(0, Number(e.target.value)))}
-          slotProps={{ htmlInput: { min: 0 } }}
+          sx={{
+            '& input[type=number]': { MozAppearance: 'textfield', textAlign: 'center' },
+            '& input[type=number]::-webkit-outer-spin-button, & input[type=number]::-webkit-inner-spin-button': { WebkitAppearance: 'none', margin: 0 },
+          }}
+          slotProps={{
+            htmlInput: { min: 0 },
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <IconButton
+                    size="small"
+                    aria-label="Decrease replicas"
+                    disabled={overrideBlocked || replicas <= 0}
+                    onClick={() => setReplicas((r) => Math.max(0, r - 1))}
+                  >
+                    <RemoveIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ),
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton size="small" aria-label="Increase replicas" disabled={overrideBlocked} onClick={() => setReplicas((r) => r + 1)}>
+                    <AddIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ),
+            },
+          }}
         />
         {needsConfirm && (
           <>
@@ -608,7 +776,7 @@ function ScaleDialog({ target, onClose, onDone, onError }: { target: RowActionTa
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
-          disabled={scale.isPending || confirmBlocked}
+          disabled={scale.isPending || confirmBlocked || overrideBlocked}
           onClick={() =>
             scale.mutate(
               {
@@ -628,7 +796,7 @@ function ScaleDialog({ target, onClose, onDone, onError }: { target: RowActionTa
             )
           }
         >
-          Scale
+          {scaler ? 'Override' : 'Scale'}
         </Button>
       </DialogActions>
     </Dialog>
@@ -640,16 +808,33 @@ interface PodTemplateContainer {
   image?: string;
 }
 
-function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActionTarget; onClose: () => void; onDone: (t: string) => void; onError: (e: unknown) => void }) {
+export function SetImageDialog({
+  target,
+  initialContainer,
+  onClose,
+  onDone,
+  onError,
+}: {
+  target: RowActionTarget;
+  initialContainer?: string;
+  onClose: () => void;
+  onDone: (t: string) => void;
+  onError: (e: unknown) => void;
+}) {
   const setImage = useSetImage();
   const podSpec = (target.obj.spec as { template?: { spec?: { containers?: PodTemplateContainer[]; initContainers?: PodTemplateContainer[] } } })?.template?.spec;
   const containers = [
     ...(podSpec?.containers ?? []).map((c) => ({ ...c, init: false })),
     ...(podSpec?.initContainers ?? []).map((c) => ({ ...c, init: true })),
   ];
-  const [selected, setSelected] = useState(containers[0]?.name ?? '');
+  const first = containers.find((c) => c.name === initialContainer) ?? containers[0];
+  const [selected, setSelected] = useState(first?.name ?? '');
   const chosen = containers.find((c) => c.name === selected);
-  const [image, setImageValue] = useState(chosen?.image ?? '');
+  const parsed = chosen?.image ? splitImageRef(chosen.image) : undefined;
+  const [mode, setMode] = useState<'tag' | 'image'>(first?.image ? 'tag' : 'image');
+  const [tag, setTag] = useState(first?.image ? splitImageRef(first.image).tag ?? '' : '');
+  const [image, setImageValue] = useState(first?.image ?? '');
+  const finalImage = mode === 'tag' && parsed ? (tag.trim() ? `${parsed.repo}:${tag.trim()}` : '') : image.trim();
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle>Set image — {target.obj.metadata.name}</DialogTitle>
@@ -663,7 +848,10 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
             onChange={(e) => {
               const name = e.target.value;
               setSelected(name);
-              setImageValue(containers.find((c) => c.name === name)?.image ?? '');
+              const img = containers.find((c) => c.name === name)?.image;
+              setImageValue(img ?? '');
+              setTag(img ? splitImageRef(img).tag ?? '' : '');
+              if (!img) setMode('image');
             }}
           >
             {containers.map((c) => (
@@ -674,13 +862,37 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
             ))}
           </Select>
         </FormControl>
-        <TextField autoFocus fullWidth label="Image" value={image} onChange={(e) => setImageValue(e.target.value)} helperText={chosen?.image ? `Current: ${chosen.image}` : undefined} />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={mode}
+          onChange={(_e, v) => {
+            if (v) setMode(v as 'tag' | 'image');
+          }}
+        >
+          <ToggleButton value="tag" disabled={!parsed}>
+            Tag only
+          </ToggleButton>
+          <ToggleButton value="image">Full image</ToggleButton>
+        </ToggleButtonGroup>
+        {mode === 'tag' && parsed ? (
+          <TextField
+            autoFocus
+            fullWidth
+            label="Tag"
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            helperText={`Applies ${parsed.repo}:${tag.trim() || '<tag>'}${parsed.digest ? ' — replaces the digest pin' : ''}`}
+          />
+        ) : (
+          <TextField autoFocus fullWidth label="Image" value={image} onChange={(e) => setImageValue(e.target.value)} helperText={chosen?.image ? `Current: ${chosen.image}` : undefined} />
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
-          disabled={setImage.isPending || !image.trim() || !chosen}
+          disabled={setImage.isPending || !finalImage || !chosen}
           onClick={() =>
             setImage.mutate(
               {
@@ -690,14 +902,14 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
                   namespace: target.obj.metadata.namespace ?? '',
                   name: target.obj.metadata.name,
                   container: selected,
-                  image: image.trim(),
+                  image: finalImage,
                   initContainer: chosen?.init || undefined,
                 },
               },
               {
                 onSuccess: () => {
                   onClose();
-                  onDone(`Set ${selected} image to ${image.trim()}`);
+                  onDone(`Set ${selected} image to ${finalImage}`);
                 },
                 onError: (e) => {
                   onClose();
@@ -714,12 +926,20 @@ function SetImageDialog({ target, onClose, onDone, onError }: { target: RowActio
   );
 }
 
+const DEBUG_PROFILES: Array<{ value: DebugProfile; label: string; hint: string }> = [
+  { value: 'general', label: 'General', hint: 'No extra privileges — inherits the namespace defaults.' },
+  { value: 'restricted', label: 'Restricted', hint: 'Non-root, all capabilities dropped — for PodSecurity-restricted namespaces (needs a non-root image).' },
+  { value: 'netadmin', label: 'Network admin', hint: 'Adds NET_ADMIN and NET_RAW — tcpdump, iptables, ping.' },
+  { value: 'sysadmin', label: 'System admin', hint: 'Privileged container — full access, rejected in restricted namespaces.' },
+];
+
 function DebugDialog({ target, onClose, onDone, onError }: { target: RowActionTarget; onClose: () => void; onDone: (t: string) => void; onError: (e: unknown) => void }) {
   const debug = useDebugPod();
   const addTab = useDockStore((s) => s.addTab);
   const containers = podContainerNames(target.obj);
   const [image, setImage] = useState('busybox:1.36');
   const [targetContainer, setTargetContainer] = useState(containers[0] ?? '');
+  const [profile, setProfile] = useState<DebugProfile>('general');
   const name = target.obj.metadata.name;
   return (
     <Dialog open onClose={debug.isPending ? undefined : onClose} maxWidth="sm" fullWidth>
@@ -741,6 +961,19 @@ function DebugDialog({ target, onClose, onDone, onError }: { target: RowActionTa
             ))}
           </Select>
         </FormControl>
+        <FormControl size="small" fullWidth>
+          <InputLabel id="debug-profile">Profile</InputLabel>
+          <Select labelId="debug-profile" label="Profile" value={profile} onChange={(e) => setProfile(e.target.value as DebugProfile)}>
+            {DEBUG_PROFILES.map((p) => (
+              <MenuItem key={p.value} value={p.value}>
+                {p.label}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>
+          {DEBUG_PROFILES.find((p) => p.value === profile)?.hint}
+        </Typography>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={debug.isPending}>
@@ -751,7 +984,7 @@ function DebugDialog({ target, onClose, onDone, onError }: { target: RowActionTa
           disabled={debug.isPending || !image.trim()}
           onClick={() =>
             debug.mutate(
-              { ctx: target.ctx, body: { namespace: target.obj.metadata.namespace ?? '', pod: name, image: image.trim(), target: targetContainer || undefined } },
+              { ctx: target.ctx, body: { namespace: target.obj.metadata.namespace ?? '', pod: name, image: image.trim(), target: targetContainer || undefined, profile } },
               {
                 onSuccess: ({ containerName }) => {
                   onClose();
@@ -767,58 +1000,6 @@ function DebugDialog({ target, onClose, onDone, onError }: { target: RowActionTa
           }
         >
           {debug.isPending ? 'Starting…' : 'Start'}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-function PortForwardDialog({ target, onClose, onDone, onError }: { target: RowActionTarget; onClose: () => void; onDone: (t: string) => void; onError: (e: unknown) => void }) {
-  const start = useStartPortForward();
-  const isPod = target.kind === 'Pod';
-  const defaultPort = isPod
-    ? ((target.obj.spec as { containers?: Array<{ ports?: Array<{ containerPort: number }> }> })?.containers?.[0]?.ports?.[0]?.containerPort ?? 80)
-    : ((target.obj.spec as { ports?: Array<{ port: number }> })?.ports?.[0]?.port ?? 80);
-  const [remotePort, setRemotePort] = useState(defaultPort);
-  const [localPort, setLocalPort] = useState<number | ''>('');
-  return (
-    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle>Port forward {target.obj.metadata.name}</DialogTitle>
-      <DialogContent sx={{ display: 'flex', gap: 2, pt: '12px !important' }}>
-        <TextField label={`${target.kind} port`} type="number" value={remotePort} onChange={(e) => setRemotePort(Number(e.target.value))} />
-        <TextField label="Local port (auto)" type="number" value={localPort} onChange={(e) => setLocalPort(e.target.value === '' ? '' : Number(e.target.value))} placeholder="auto" />
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button
-          variant="contained"
-          disabled={start.isPending}
-          onClick={() =>
-            start.mutate(
-              {
-                ctx: target.ctx,
-                body: {
-                  namespace: target.obj.metadata.namespace ?? '',
-                  kind: isPod ? 'pod' : 'service',
-                  name: target.obj.metadata.name,
-                  remotePort,
-                  localPort: localPort === '' ? undefined : localPort,
-                },
-              },
-              {
-                onSuccess: (info) => {
-                  onClose();
-                  onDone(`Forwarding localhost:${info.localPort} → ${info.name}:${info.remotePort}`);
-                },
-                onError: (e) => {
-                  onClose();
-                  onError(e);
-                },
-              },
-            )
-          }
-        >
-          Start
         </Button>
       </DialogActions>
     </Dialog>

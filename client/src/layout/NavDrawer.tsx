@@ -1,4 +1,5 @@
-import { memo, useDeferredValue, useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { layout } from '../theme.js';
 import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 import Drawer from '@mui/material/Drawer';
@@ -36,13 +37,19 @@ import { HOTKEY_MOD_LABEL } from '../platform.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { useTabsStore } from '../state/tabs.js';
+import { applySavedViewGridState } from '../state/saved-view.js';
 import { GROUP_ICONS } from './tab-meta.js';
+import { TruncationTooltip } from '../components/truncation.js';
 
-const WIDTH = 228;
+const WIDTH = layout.navDrawerWidth;
 // Indent of group items so they line up under the group label (button pl 16px + icon 26px).
 const ITEM_INDENT = '42px';
+// Two deeper steps for the Custom Resources tree (domain → API group → kind).
+const SUB_INDENT = '54px';
+const KIND_INDENT = '66px';
 const FAVORITE_DRAG_TYPE = 'application/x-kubus-favorite';
 const CUSTOM_GROUP_PREFIX = 'custom:';
+const CRD_LIST_PATH = '/r/apiextensions.k8s.io/v1/customresourcedefinitions';
 
 
 /**
@@ -59,12 +66,13 @@ function hotkeyFavorites(favorites: FavoriteItem[]): FavoriteItem[] {
  * page tab (+Shift focuses it), middle-click opens a background tab.
  * Plain clicks keep navigating the active tab via NavLink.
  */
-function useOpenInNewTab(to: string) {
+function useOpenInNewTab(to: string, pendingSavedView?: SavedView['grid']) {
   const openTab = useTabsStore((s) => s.openTab);
   const navigate = useNavigate();
   const open = (e: React.MouseEvent, foreground: boolean) => {
     e.preventDefault();
-    openTab(to, { activate: foreground, afterActive: true });
+    if (foreground && pendingSavedView) applySavedViewGridState(to, pendingSavedView);
+    openTab(to, { activate: foreground, afterActive: true, pendingSavedView: foreground ? undefined : pendingSavedView });
     if (foreground) void navigate(to);
   };
   return {
@@ -161,6 +169,50 @@ function dedupeCustomNavKinds(kinds: ResourceKindInfo[]): ResourceKindInfo[] {
   return [...byKind.values()];
 }
 
+interface CustomSubgroup {
+  /** Full API group, e.g. `appstore.eda.nokia.com`. */
+  group: string;
+  /** Group with the shared domain stripped, e.g. `appstore.eda`. */
+  label: string;
+  kinds: ResourceKindInfo[];
+}
+
+/**
+ * One top-level entry under Custom Resources: a lone API group shown by its
+ * full name, or a domain (last two dot-labels, e.g. `nokia.com`) folding the
+ * groups that share it. A group named exactly like the domain contributes its
+ * kinds directly to the domain entry rather than an empty-labelled subgroup.
+ */
+interface CustomNavNode {
+  label: string;
+  kinds: ResourceKindInfo[];
+  subgroups: CustomSubgroup[];
+}
+
+function buildCustomNav(customKinds: Array<[string, ResourceKindInfo[]]>): CustomNavNode[] {
+  const byDomain = new Map<string, Array<{ group: string; kinds: ResourceKindInfo[] }>>();
+  for (const [group, kinds] of customKinds) {
+    const domain = group.split('.').slice(-2).join('.');
+    const list = byDomain.get(domain) ?? [];
+    list.push({ group, kinds });
+    byDomain.set(domain, list);
+  }
+  const nodes: CustomNavNode[] = [];
+  for (const [domain, groups] of byDomain) {
+    if (groups.length === 1) {
+      nodes.push({ label: groups[0]!.group, kinds: groups[0]!.kinds, subgroups: [] });
+      continue;
+    }
+    const own = groups.find((g) => g.group === domain);
+    const subgroups = groups
+      .filter((g) => g.group !== domain)
+      .map((g) => ({ group: g.group, label: g.group.slice(0, -(domain.length + 1)), kinds: g.kinds }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    nodes.push({ label: domain, kinds: own?.kinds ?? [], subgroups });
+  }
+  return nodes.sort((a, b) => a.label.localeCompare(b.label));
+}
+
 function NavEntry({
   to,
   label,
@@ -170,6 +222,7 @@ function NavEntry({
   favoriteAction,
   hotkey,
   onIntent,
+  indent,
 }: {
   to: string;
   label: string;
@@ -181,6 +234,8 @@ function NavEntry({
   hotkey?: string;
   /** Fired on hover/focus — used to preload the target's heavy chunks. */
   onIntent?: () => void;
+  /** Left padding override for entries nested below the default group level. */
+  indent?: string;
 }) {
   const location = useLocation();
   const active = location.pathname === to;
@@ -197,20 +252,22 @@ function NavEntry({
       onMouseEnter={onIntent}
       onFocus={onIntent}
       {...newTabHandlers}
-      sx={{ pl: icon ? 1.5 : ITEM_INDENT, py: subtitle ? 0.25 : 0.375, pr: favorite ? (favoriteAction ? 7 : 4) : undefined }}
+      sx={{ pl: icon ? 1.5 : (indent ?? ITEM_INDENT), py: subtitle ? 0.25 : 0.375, pr: favorite ? (favoriteAction ? 7 : 4) : undefined }}
     >
       {icon && (
         <ListItemIcon sx={{ minWidth: 26, color: 'text.secondary', '& svg': { fontSize: 17 } }}>{icon}</ListItemIcon>
       )}
-      <ListItemText
-        primary={label}
-        secondary={subtitle}
-        sx={{ my: subtitle ? 0.25 : undefined }}
-        slotProps={{
-          primary: { variant: 'body2', noWrap: true, sx: subtitle ? { lineHeight: 1.25 } : undefined },
-          secondary: { noWrap: true, title: subtitle, sx: { fontSize: 10.5, fontStyle: 'italic', lineHeight: 1.1 } },
-        }}
-      />
+      <TruncationTooltip text={label} measureSelector=".MuiListItemText-primary">
+        <ListItemText
+          primary={label}
+          secondary={subtitle}
+          sx={{ my: subtitle ? 0.25 : undefined }}
+          slotProps={{
+            primary: { variant: 'body2', noWrap: true, sx: subtitle ? { lineHeight: 1.25 } : undefined },
+            secondary: { noWrap: true, title: subtitle, sx: { fontSize: 10.5, fontStyle: 'italic', lineHeight: 1.1 } },
+          }}
+        />
+      </TruncationTooltip>
     </ListItemButton>
   );
   if (!favorite) return button;
@@ -255,7 +312,15 @@ function NavEntry({
 function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: string) => void }) {
   const location = useLocation();
   const active = `${location.pathname}${location.search}` === view.path;
-  const newTabHandlers = useOpenInNewTab(view.path);
+  const newTabHandlers = useOpenInNewTab(view.path, view.grid);
+  // Views saved with a grid snapshot restore the whole table — namespaces,
+  // sort, column visibility and widths — not just the query in the path.
+  // Older views without one restore the query only.
+  const applyGridState = () => {
+    const grid = view.grid;
+    if (!grid) return;
+    applySavedViewGridState(view.path, grid);
+  };
   return (
     <ListItem
       disablePadding
@@ -277,7 +342,20 @@ function SavedViewEntry({ view, onDelete }: { view: SavedView; onDelete: (id: st
       }
       sx={{ '& .MuiListItemSecondaryAction-root': { right: 4 } }}
     >
-      <ListItemButton component={NavLink} to={view.path} dense selected={active} {...newTabHandlers} sx={{ pl: ITEM_INDENT, py: 0.375, pr: 4.5 }}>
+      <ListItemButton
+        component={NavLink}
+        to={view.path}
+        dense
+        selected={active}
+        onClick={(e) => {
+          if (!e.ctrlKey && !e.metaKey) applyGridState();
+          newTabHandlers.onClick(e);
+        }}
+        onAuxClick={(e) => {
+          newTabHandlers.onAuxClick(e);
+        }}
+        sx={{ pl: ITEM_INDENT, py: 0.375, pr: 4.5 }}
+      >
         <ListItemText primary={view.title} slotProps={{ primary: { variant: 'body2', noWrap: true } }} />
       </ListItemButton>
     </ListItem>
@@ -333,6 +411,94 @@ function GroupHeader({
         />
       </ListItemButton>
     </ListItem>
+  );
+}
+
+/** Collapsible domain / API-group header inside the Custom Resources tree. */
+function CustomGroupHeader({
+  label,
+  title,
+  count,
+  indent,
+  open,
+  active,
+  onClick,
+}: {
+  label: string;
+  /** Hover hint; defaults to the label (subgroups pass their full API group). */
+  title?: string;
+  count?: number;
+  indent: string;
+  open: boolean;
+  /** The current page lives inside this branch — color it as the active trail. */
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <ListItemButton
+      dense
+      aria-expanded={open}
+      onClick={onClick}
+      sx={{ pl: indent, pr: 1.5, py: 0.375, mt: 0.5, color: active ? 'primary.main' : open ? 'text.primary' : 'text.secondary' }}
+    >
+      {/* Same body2 size as the kind rows below — hierarchy comes from the
+          600 weight, indent and rail, not from switching to a smaller bold
+          caption face that reads as foreign next to the rest of the nav.
+          Subgroups tooltip their full API group even untruncated (`always`),
+          since the visible label is only the domain-stripped suffix. */}
+      <TruncationTooltip
+        text={title ?? label}
+        always={!!title && title !== label}
+        measureSelector=".MuiListItemText-primary"
+      >
+        <ListItemText
+          primary={label}
+          slotProps={{ primary: { variant: 'body2', noWrap: true, sx: { fontWeight: 600, lineHeight: 1.4 } } }}
+        />
+      </TruncationTooltip>
+      {count !== undefined && (
+        <Typography variant="caption" aria-hidden sx={{ ml: 0.5, color: 'text.disabled', fontVariantNumeric: 'tabular-nums' }}>
+          {count}
+        </Typography>
+      )}
+      <ExpandMoreIcon
+        sx={{ ml: 0.5, fontSize: 15, opacity: 0.6, flexShrink: 0, transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform 120ms ease' }}
+      />
+    </ListItemButton>
+  );
+}
+
+/**
+ * Children of an expanded Custom Resources level: a faint panel tint plus,
+ * on the first level only, an indent guide rail aligned under the parent
+ * label — a second rail per nesting level reads as clutter. The rail takes
+ * the accent color while the branch contains the current page.
+ */
+function TreeChildren({ railLeft, active, children }: { railLeft?: string; active?: boolean; children: ReactNode }) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)'),
+        ...(railLeft && {
+          '&::before': {
+            content: '""',
+            position: 'absolute',
+            left: railLeft,
+            top: 3,
+            bottom: 3,
+            width: '2px',
+            borderRadius: 1,
+            bgcolor: active ? 'primary.main' : 'divider',
+            opacity: active ? 0.55 : 1,
+            pointerEvents: 'none',
+            zIndex: 1,
+          },
+        }),
+      }}
+    >
+      {children}
+    </Box>
   );
 }
 
@@ -430,7 +596,16 @@ function FavoriteDragShell({
   );
 }
 
-export const NavDrawer = memo(function NavDrawer() {
+interface NavDrawerProps {
+  /** Render as a temporary overlay (narrow viewports) instead of a pinned rail. */
+  overlay: boolean;
+  /** Pinned rail collapsed to zero width; content stays mounted for hotkeys. */
+  hidden: boolean;
+  open: boolean;
+  onClose: () => void;
+}
+
+export const NavDrawer = memo(function NavDrawer({ overlay, hidden, open, onClose }: NavDrawerProps) {
   const selected = useClustersStore((s) => s.selected);
   const { data: apiResources } = useApiResourcesForContexts(selected);
   const favorites = useNavigationStore((s) => s.favorites);
@@ -453,6 +628,14 @@ export const NavDrawer = memo(function NavDrawer() {
   const [favoriteDropTarget, setFavoriteDropTarget] = useState<FavoriteDropTarget | null>(null);
   const deferredFilter = useDeferredValue(filter);
   const navigate = useNavigate();
+
+  // The overlay covers content — dismiss it once a nav click lands.
+  const location = useLocation();
+  const currentPath = location.pathname + location.search;
+  useEffect(() => {
+    if (overlay) onClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- close on navigation only
+  }, [currentPath]);
 
   // Cmd/Ctrl+1–9 jumps to the corresponding favorite. Digits come from
   // e.code so the physical number row works on any keyboard layout. Note the
@@ -507,6 +690,99 @@ export const NavDrawer = memo(function NavDrawer() {
     }
     return [...byGroup.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [apiResources]);
+  const customNav = useMemo(() => buildCustomNav(customKinds), [customKinds]);
+
+  // Group chain (outermost first) containing each kind path, used to reveal
+  // the entry for the active resource after a cross-kind jump.
+  const groupChainByPath = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const group of BUILTIN_NAV_GROUPS) {
+      for (const k of group.kinds) map.set(kindPath(k.group, k.version, k.plural), [group.title]);
+    }
+    map.set(CRD_LIST_PATH, ['Custom Resources']);
+    for (const node of customNav) {
+      const nodeKey = `${CUSTOM_GROUP_PREFIX}${node.label}`;
+      for (const k of node.kinds) map.set(kindPath(k.group, k.version, k.plural), ['Custom Resources', nodeKey]);
+      for (const sg of node.subgroups) {
+        for (const k of sg.kinds) {
+          map.set(kindPath(k.group, k.version, k.plural), ['Custom Resources', nodeKey, `${CUSTOM_GROUP_PREFIX}${sg.group}`]);
+        }
+      }
+    }
+    return map;
+  }, [customNav]);
+
+  const listRef = useRef<HTMLUListElement | null>(null);
+  // Bring the active entry into view. A just-expanded Collapse animates open,
+  // growing the drawer's scroll range as it goes, so a single scroll lands
+  // short; keep nudging each frame until the entry's position settles.
+  // Favorites can render a second copy of the active entry; the canonical
+  // group entry is the last match, and expanding its chain guarantees it
+  // is present. Returns a canceller for use as an effect cleanup.
+  const scrollActiveEntryIntoView = useCallback(() => {
+    const deadline = performance.now() + 1200;
+    let raf = 0;
+    let lastTop: number | null = null;
+    let stable = 0;
+    const tick = () => {
+      const entries = listRef.current?.querySelectorAll('.Mui-selected');
+      const el = entries?.[entries.length - 1];
+      if (el) {
+        const top = el.getBoundingClientRect().top;
+        stable = lastTop !== null && Math.abs(top - lastTop) < 0.5 ? stable + 1 : 0;
+        lastTop = top;
+        el.scrollIntoView({ block: 'nearest' });
+        if (stable >= 5) return;
+      }
+      if (performance.now() < deadline) raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // When navigation lands on a kind (cross-resource jump, tab switch, deep
+  // link), expand the groups containing it and bring the entry into view.
+  // Guarded per path so discovery refetches don't reopen a group the user
+  // collapsed afterwards; a custom kind's chain is unknown until discovery
+  // arrives, so those retry once groupChainByPath fills in.
+  const revealedPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (revealedPathRef.current === location.pathname) return;
+    const chain = groupChainByPath.get(location.pathname);
+    if (!chain && location.pathname.startsWith('/r/')) return;
+    revealedPathRef.current = location.pathname;
+    if (chain) {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        // Custom-group keys are an explicit open override, so open means
+        // present in the set; every other title is open when absent.
+        for (const title of chain) {
+          if (title.startsWith(CUSTOM_GROUP_PREFIX)) next.add(title);
+          else next.delete(title);
+        }
+        return next.size === prev.size && [...next].every((t) => prev.has(t)) ? prev : next;
+      });
+    }
+    return scrollActiveEntryIntoView();
+  }, [location.pathname, groupChainByPath, scrollActiveEntryIntoView]);
+
+  // Clearing the filter re-collapses groups; keep the active entry in view
+  // instead of letting the selection vanish with them.
+  const prevFilterRef = useRef(deferredFilter);
+  useEffect(() => {
+    const hadFilter = !!prevFilterRef.current;
+    prevFilterRef.current = deferredFilter;
+    if (!hadFilter || deferredFilter) return;
+    return scrollActiveEntryIntoView();
+  }, [deferredFilter, scrollActiveEntryIntoView]);
+
+  // The temporary drawer mounts its content only while open, so a reveal
+  // that ran while it was closed expanded the groups but had no list to
+  // scroll. Bring the active entry into view whenever the overlay opens.
+  useEffect(() => {
+    if (!overlay || !open) return;
+    return scrollActiveEntryIntoView();
+  }, [overlay, open, scrollActiveEntryIntoView]);
 
   // Kinds belonging to each favoritable category, used to expand a favorited
   // category inline under the Favorites group.
@@ -527,6 +803,8 @@ export const NavDrawer = memo(function NavDrawer() {
 
   const f = deferredFilter.toLowerCase();
   const matches = (label: string) => !f || label.toLowerCase().includes(f);
+  // Branch containing the current page, for active-trail coloring in the tree.
+  const activeChain = groupChainByPath.get(location.pathname) ?? [];
   // While filtering, always expand so matches are visible. CRD API groups are
   // discovered dynamically, so they use the set as an explicit open override.
   const isOpen = (title: string) => !!f || (title.startsWith(CUSTOM_GROUP_PREFIX) ? collapsed.has(title) : !collapsed.has(title));
@@ -570,19 +848,26 @@ export const NavDrawer = memo(function NavDrawer() {
       children
     );
 
+  const railHidden = !overlay && hidden;
   return (
     <Drawer
-      variant="permanent"
+      variant={overlay ? 'temporary' : 'permanent'}
+      open={overlay ? open : true}
+      onClose={onClose}
       sx={{
-        width: WIDTH,
+        width: overlay || railHidden ? 0 : WIDTH,
         flexShrink: 0,
+        transition: 'width 150ms ease',
         '& .MuiDrawer-paper': {
-          width: WIDTH,
-          position: 'relative',
-          borderRight: 1,
+          width: railHidden ? 0 : WIDTH,
+          borderRight: railHidden ? 0 : 1,
           borderColor: 'divider',
           overflowY: 'auto',
-          bgcolor: (theme) => (theme.palette.mode === 'dark' ? '#151518' : '#f4f4f5'),
+          overflowX: 'hidden',
+          bgcolor: (theme) => theme.palette.sidebar,
+          ...(overlay
+            ? { top: `${layout.topBarHeight}px`, height: `calc(100% - ${layout.topBarHeight}px)` }
+            : { position: 'relative', transition: 'width 150ms ease' }),
         },
       }}
     >
@@ -592,6 +877,12 @@ export const NavDrawer = memo(function NavDrawer() {
           placeholder="Filter resources…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            e.stopPropagation();
+            if (filter) setFilter('');
+            else (e.target as HTMLElement).blur();
+          }}
           slotProps={{
             input: {
               startAdornment: (
@@ -617,7 +908,7 @@ export const NavDrawer = memo(function NavDrawer() {
           }}
         />
       </Box>
-      <List dense disablePadding sx={{ pb: 4 }}>
+      <List dense disablePadding ref={listRef} sx={{ pb: 4 }}>
         <NavEntry to="/" label="Overview" icon={<SpaceDashboardOutlinedIcon />} />
         <NavEntry to="/events" label="Events" icon={<NotificationsNoneOutlinedIcon />} />
         <NavEntry to="/audit" label="Security Audit" icon={<GppMaybeOutlinedIcon />} />
@@ -725,42 +1016,79 @@ export const NavDrawer = memo(function NavDrawer() {
               favorite={{ active: isFav('category:Custom Resources'), onToggle: () => toggleCategory('Custom Resources') }}
             />
             <Collapse in={isOpen('Custom Resources')}>
-              {customKinds.map(([groupName, kinds]) => {
-                const groupMatches = matches(groupName);
-                const visible = groupMatches ? kinds : kinds.filter((k) => matches(k.kind));
-                if (!visible.length) return null;
-                const collapseKey = `${CUSTOM_GROUP_PREFIX}${groupName}`;
+              {(!f || 'crd definitions customresourcedefinitions'.includes(f)) && (
+                <NavEntry
+                  to={CRD_LIST_PATH}
+                  label="Definitions"
+                  favorite={kindFavorite({
+                    group: 'apiextensions.k8s.io',
+                    version: 'v1',
+                    plural: 'customresourcedefinitions',
+                    kind: 'CustomResourceDefinition',
+                    label: 'CRD Definitions',
+                  })}
+                />
+              )}
+              {customNav.map((node) => {
+                const nodeKey = `${CUSTOM_GROUP_PREFIX}${node.label}`;
+                const nodeMatches = matches(node.label);
+                const ownKinds = nodeMatches ? node.kinds : node.kinds.filter((k) => matches(k.kind));
+                const subgroups = node.subgroups
+                  .map((sg) => ({ ...sg, kinds: nodeMatches || matches(sg.group) ? sg.kinds : sg.kinds.filter((k) => matches(k.kind)) }))
+                  .filter((sg) => sg.kinds.length > 0);
+                if (!ownKinds.length && !subgroups.length) return null;
+                const kindCount = node.kinds.length + node.subgroups.reduce((n, sg) => n + sg.kinds.length, 0);
                 return (
-                  <Box key={groupName}>
-                    <ListItemButton
-                      dense
-                      aria-expanded={isOpen(collapseKey)}
-                      onClick={() => toggleGroup(collapseKey)}
-                      sx={{ pl: ITEM_INDENT, pr: 1.5, py: 0.25, mt: 0.5, color: 'text.secondary' }}
-                    >
-                      <ListItemText
-                        primary={groupName}
-                        slotProps={{ primary: { variant: 'caption', noWrap: true, title: groupName, sx: { fontWeight: 700, lineHeight: 1.4 } } }}
-                      />
-                      <ExpandMoreIcon
-                        sx={{
-                          ml: 0.5,
-                          fontSize: 15,
-                          opacity: 0.6,
-                          transform: isOpen(collapseKey) ? 'none' : 'rotate(-90deg)',
-                          transition: 'transform 120ms ease',
-                        }}
-                      />
-                    </ListItemButton>
-                    <Collapse in={isOpen(collapseKey)}>
-                      {visible.map((k) => (
-                        <NavEntry
-                          key={`${k.group}/${k.version}/${k.plural}`}
-                          to={kindPath(k.group, k.version, k.plural)}
-                          label={k.kind}
-                          favorite={kindFavorite({ group: k.group, version: k.version, plural: k.plural, kind: k.kind, label: k.kind })}
-                        />
-                      ))}
+                  <Box key={node.label}>
+                    <CustomGroupHeader
+                      label={node.label}
+                      count={kindCount}
+                      indent={ITEM_INDENT}
+                      open={isOpen(nodeKey)}
+                      active={activeChain.includes(nodeKey)}
+                      onClick={() => toggleGroup(nodeKey)}
+                    />
+                    <Collapse in={isOpen(nodeKey)}>
+                      <TreeChildren railLeft="45px" active={activeChain.includes(nodeKey)}>
+                        {ownKinds.map((k) => (
+                          <NavEntry
+                            key={`${k.group}/${k.version}/${k.plural}`}
+                            to={kindPath(k.group, k.version, k.plural)}
+                            label={k.kind}
+                            indent={SUB_INDENT}
+                            favorite={kindFavorite({ group: k.group, version: k.version, plural: k.plural, kind: k.kind, label: k.kind })}
+                          />
+                        ))}
+                        {subgroups.map((sg) => {
+                          const sgKey = `${CUSTOM_GROUP_PREFIX}${sg.group}`;
+                          return (
+                            <Box key={sg.group}>
+                              <CustomGroupHeader
+                                label={sg.label}
+                                title={sg.group}
+                                count={sg.kinds.length}
+                                indent={SUB_INDENT}
+                                open={isOpen(sgKey)}
+                                active={activeChain.includes(sgKey)}
+                                onClick={() => toggleGroup(sgKey)}
+                              />
+                              <Collapse in={isOpen(sgKey)}>
+                                <TreeChildren>
+                                  {sg.kinds.map((k) => (
+                                    <NavEntry
+                                      key={`${k.group}/${k.version}/${k.plural}`}
+                                      to={kindPath(k.group, k.version, k.plural)}
+                                      label={k.kind}
+                                      indent={KIND_INDENT}
+                                      favorite={kindFavorite({ group: k.group, version: k.version, plural: k.plural, kind: k.kind, label: k.kind })}
+                                    />
+                                  ))}
+                                </TreeChildren>
+                              </Collapse>
+                            </Box>
+                          );
+                        })}
+                      </TreeChildren>
                     </Collapse>
                   </Box>
                 );

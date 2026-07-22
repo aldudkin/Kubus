@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { layout } from '../theme.js';
 import Box from '@mui/material/Box';
 import Drawer from '@mui/material/Drawer';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -19,19 +20,25 @@ import { dump as dumpYaml } from 'js-yaml';
 import { gvkForResource, type KubeObject } from '@kubus/shared';
 import { useApplyResource, useDryRunResource, useResource, useResourceEvents } from '../api/queries.js';
 import { withoutManagedFields } from '../kube-display.js';
+import { isTextEntryTarget } from '../text-entry.js';
 import { YamlEditor, useYamlSchema } from './YamlEditor.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 import { GenericDetail } from './detail/GenericDetail.js';
+import { ConfigMapDetail } from './detail/ConfigMapDetail.js';
+import { DataEditor } from './detail/DataEditor.js';
 import { DeploymentDetail } from './detail/DeploymentDetail.js';
 import { PodDetail } from './detail/PodDetail.js';
 import { NodeDetail } from './detail/NodeDetail.js';
 import { ServiceDetail } from './detail/ServiceDetail.js';
 import { SecretDetail } from './detail/SecretDetail.js';
+import { CertificateDetail } from './detail/CertificateDetail.js';
 import { CrdDetail, CrdSchemaDetail, crdVersions } from './detail/CrdDetail.js';
 import { CustomResourceDetail } from './detail/CustomResourceDetail.js';
 import { RolloutHistory } from './detail/RolloutHistory.js';
 import { AgeCell } from './AgeCell.js';
 import { MetricsChart } from './MetricsChart.js';
 import { RowActions, RowLogsButton } from './RowActions.js';
+import { TruncationTooltip } from './truncation.js';
 import { TopologyGraph } from './TopologyGraph.js';
 import { useDetailStore } from '../state/detail.js';
 
@@ -58,10 +65,20 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
   const [reveal, setReveal] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
   const pushDetail = useDetailStore((s) => s.push);
+  // Leaving the Data tab drops its staged per-key edits. The guard lives in
+  // the detail store because selection replacements (row clicks, topology,
+  // search) bypass the drawer entirely; the drawer routes its own affordances
+  // (tab switch, back, close) through the same guard and dialog.
+  const guardLeave = useDetailStore((s) => s.guard);
+  const setDataDirty = useDetailStore((s) => s.setDataDirty);
+  const pendingDiscard = useDetailStore((s) => s.pendingDiscard);
+  const confirmDiscard = useDetailStore((s) => s.confirmDiscard);
+  const cancelDiscard = useDetailStore((s) => s.cancelDiscard);
   const registeredKind = sel && gvkForResource(sel.group, sel.version, sel.plural)?.kind;
   const isCrdResource = sel?.group === 'apiextensions.k8s.io' && sel.version === 'v1' && sel.plural === 'customresourcedefinitions';
   const behaviorKind = sel && (registeredKind === sel.kind || isCrdResource) ? sel.kind : undefined;
   const isSecret = behaviorKind === 'Secret';
+  const hasDataTab = isSecret || behaviorKind === 'ConfigMap';
   const isCrd = isCrdResource && sel?.kind === 'CustomResourceDefinition';
   const backingCrdSelection = sel?.custom && !isCrd && sel.group
     ? {
@@ -86,7 +103,12 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
     if (!hasSel) setFullScreen(false);
   }, [hasSel]);
 
-  const { data: obj, refetch } = useResource(sel ? { ...sel, reveal: isSecret && reveal } : undefined);
+  // Live-refresh the object while Overview is showing so stuck pods, rollouts
+  // and conditions update in place; other tabs (YAML editing!) keep the
+  // snapshot they opened with.
+  const { data: obj, refetch } = useResource(sel ? { ...sel, reveal: isSecret && reveal } : undefined, {
+    liveMs: tab === 'overview' ? 5000 : undefined,
+  });
   const { data: backingCrd } = useResource(backingCrdSelection);
   const { data: events } = useResourceEvents(tab === 'events' && sel ? { ctx: sel.ctx, name: sel.name, kind: sel.kind, namespace: sel.namespace } : undefined);
   const apply = useApplyResource();
@@ -104,9 +126,9 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
   const schemaSource = isCrd ? obj : backingCrd;
   const versions = useMemo(() => crdVersions(schemaSource), [schemaSource]);
   const hasMetrics = behaviorKind === 'Pod' || behaviorKind === 'Node';
-  const hasRolloutHistory = behaviorKind === 'Deployment' || behaviorKind === 'StatefulSet';
+  const hasRolloutHistory = behaviorKind === 'Deployment' || behaviorKind === 'StatefulSet' || behaviorKind === 'DaemonSet';
   const showMap = !isCrd;
-  const drawerTopOffset = 52;
+  const drawerTopOffset = layout.topBarHeight;
   const drawerPaperSx = {
     top: `${drawerTopOffset}px`,
     height: `calc(100% - ${drawerTopOffset}px)`,
@@ -149,7 +171,7 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
       anchor="right"
       variant={inline ? 'permanent' : 'temporary'}
       open={inline || !!sel}
-      onClose={onClose}
+      onClose={() => guardLeave(onClose)}
       sx={
         inline
           ? {
@@ -168,10 +190,21 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
       }}
     >
       {sel && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <Box
+          onKeyDown={(e) => {
+            // Alt+← steps back through the related-resource stack — but not
+            // while typing (macOS Option+← moves the caret by word).
+            if (e.key === 'ArrowLeft' && e.altKey && !e.ctrlKey && !e.metaKey && onBack && !isTextEntryTarget(e.target)) {
+              e.preventDefault();
+              e.stopPropagation();
+              guardLeave(onBack);
+            }
+          }}
+          sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+        >
           <Stack direction="row" sx={{ px: 2, py: 1, borderBottom: 1, borderColor: 'divider', alignItems: 'center' }}>
             {onBack && (
-              <IconButton onClick={onBack} sx={{ mr: 1 }}>
+              <IconButton aria-label="Back" onClick={() => guardLeave(onBack)} sx={{ mr: 1 }}>
                 <ArrowBackIcon />
               </IconButton>
             )}
@@ -201,14 +234,16 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
                   </>
                 )}
               </Typography>
-              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 650, lineHeight: 1.3 }}>
-                {sel.namespace && (
-                  <Typography component="span" variant="subtitle1" color="text.secondary" sx={{ fontWeight: 500 }}>
-                    {sel.namespace}{' / '}
-                  </Typography>
-                )}
-                {sel.name}
-              </Typography>
+              <TruncationTooltip text={sel.namespace ? `${sel.namespace} / ${sel.name}` : sel.name}>
+                <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+                  {sel.namespace && (
+                    <Typography component="span" variant="subtitle1" color="text.secondary" sx={{ fontWeight: 500 }}>
+                      {sel.namespace}{' / '}
+                    </Typography>
+                  )}
+                  {sel.name}
+                </Typography>
+              </TruncationTooltip>
             </Box>
             <Box sx={{ flex: 1 }} />
             {obj && <RowLogsButton target={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, obj }} />}
@@ -220,18 +255,19 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
                 </IconButton>
               </Tooltip>
             )}
-            <IconButton onClick={onClose} aria-label="Close resource details">
+            <IconButton onClick={() => guardLeave(onClose)} aria-label="Close resource details">
               <CloseIcon />
             </IconButton>
           </Stack>
           <Tabs
             value={tab}
-            onChange={(_e, v) => setTab(v as string)}
+            onChange={(_e, v) => guardLeave(() => setTab(v as string))}
             variant="scrollable"
             scrollButtons="auto"
             sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 36 }}
           >
             <Tab value="overview" label="Overview" sx={{ minHeight: 36 }} />
+            {hasDataTab && <Tab value="data" label="Data" sx={{ minHeight: 36 }} />}
             {versions.map((v) => (
               <Tab key={v.name} value={`crd:${v.name}`} label={v.name} sx={{ minHeight: 36 }} />
             ))}
@@ -243,6 +279,14 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
           </Tabs>
           <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
             {tab === 'overview' && obj && <OverviewForKind kind={behaviorKind} obj={obj} ctx={sel.ctx} crd={isCrd ? undefined : backingCrd} version={sel.version} />}
+            {hasDataTab && tab === 'data' && (
+              <DataEditor
+                key={selKey}
+                sel={{ ctx: sel.ctx, group: sel.group, version: sel.version, plural: sel.plural, kind: sel.kind, name: sel.name, namespace: sel.namespace }}
+                isSecret={isSecret}
+                onDirtyChange={setDataDirty}
+              />
+            )}
             {tab.startsWith('crd:') && schemaSource && <CrdSchemaDetail obj={schemaSource} versionName={tab.slice('crd:'.length)} />}
             {showMap && tab === 'map' && (
               <Box sx={{ height: '100%', p: 1.25 }}>
@@ -285,9 +329,18 @@ export function ResourceDetailDrawer({ sel, onClose, onBack, inline = false }: P
               <MetricsChart ctx={sel.ctx} kind={behaviorKind === 'Pod' ? 'pod' : 'node'} name={sel.name} namespace={sel.namespace} />
             )}
             {tab === 'history' && hasRolloutHistory && obj && (
-              <RolloutHistory ctx={sel.ctx} kind={sel.kind as 'Deployment' | 'StatefulSet'} obj={obj} />
+              <RolloutHistory ctx={sel.ctx} kind={sel.kind as 'Deployment' | 'StatefulSet' | 'DaemonSet'} obj={obj} />
             )}
           </Box>
+          <ConfirmDialog
+            open={!!pendingDiscard}
+            title="Discard data changes?"
+            message="The Data tab has key edits that have not been applied. Leaving discards them."
+            confirmLabel="Discard"
+            danger
+            onConfirm={confirmDiscard}
+            onClose={cancelDiscard}
+          />
         </Box>
       )}
     </Drawer>
@@ -308,11 +361,18 @@ function OverviewForKind({ kind, obj, ctx, crd, version }: { kind: string | unde
       return <NodeDetail obj={obj} ctx={ctx} />;
     case 'Service':
       return <ServiceDetail obj={obj} ctx={ctx} />;
+    case 'ConfigMap':
+      return <ConfigMapDetail obj={obj} ctx={ctx} />;
     case 'Secret':
       return <SecretDetail obj={obj} ctx={ctx} />;
     case 'CustomResourceDefinition':
       return <CrdDetail obj={obj} ctx={ctx} />;
     default:
+      // cert-manager Certificates get an expiry/renewal headline the printer
+      // columns don't surface.
+      if (crd?.metadata.name === 'certificates.cert-manager.io') {
+        return <CertificateDetail obj={obj} ctx={ctx} crd={crd} version={version} />;
+      }
       // Custom resources with their backing CRD loaded get a status-aware
       // overview driven by the CRD's printer columns.
       return crd ? <CustomResourceDetail obj={obj} ctx={ctx} crd={crd} version={version} /> : <GenericDetail obj={obj} ctx={ctx} />;
@@ -332,7 +392,7 @@ function EventsList({ events }: { events: KubeObject[] }) {
       {events.map((e) => {
         const ev = e as KubeObject & { type?: string; reason?: string; message?: string; count?: number; lastTimestamp?: string };
         return (
-          <Box key={e.metadata.uid} sx={{ borderLeft: 3, borderColor: ev.type === 'Warning' ? 'error.main' : 'success.main', pl: 1.5, py: 0.25 }}>
+          <Box key={e.metadata.uid} sx={{ borderLeft: 3, borderColor: ev.type === 'Warning' ? 'warning.main' : 'success.main', pl: 1.5, py: 0.25 }}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
               {ev.reason} {ev.count && ev.count > 1 ? `×${ev.count}` : ''}{' '}
               <Typography component="span" variant="caption" color="text.secondary">

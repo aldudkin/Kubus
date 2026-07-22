@@ -7,7 +7,9 @@ export interface WatchHandlers {
   onStatus(state: WatchStatusState, message?: string): void;
 }
 
-export type BroadcastHandler = (msg: Extract<WatchServerMessage, { op: 'drain-progress' | 'pf-update' | 'contexts-changed' }>) => void;
+export type BroadcastHandler = (
+  msg: Extract<WatchServerMessage, { op: 'drain-progress' | 'helm-operation' | 'pf-update' | 'contexts-changed' | 'discovery-update' }>,
+) => void;
 
 type SubParams = Omit<WatchSubMessage, 'op' | 'id'>;
 
@@ -60,7 +62,8 @@ class WatchClient {
     });
   }
 
-  private reconnectNow(): void {
+  /** Skip any pending backoff — used when connectivity is known to be back. */
+  reconnectNow(): void {
     if (this.subs.size === 0 && this.broadcastHandlers.size === 0) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     this.reconnectDelay = 1000;
@@ -157,8 +160,10 @@ class WatchClient {
           break;
         }
         case 'drain-progress':
+        case 'helm-operation':
         case 'pf-update':
-        case 'contexts-changed': {
+        case 'contexts-changed':
+        case 'discovery-update': {
           for (const handler of this.broadcastHandlers) handler(msg);
           break;
         }

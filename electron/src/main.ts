@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -30,13 +30,62 @@ const isLinux = process.platform === 'linux';
 
 // Must match the client TopBar height: its toolbar doubles as the titlebar.
 const TITLEBAR_HEIGHT = 52;
-const UPDATE_MANIFEST_URL = 'https://flosch62.github.io/Kubus/latest.json';
+const UPDATE_MANIFEST_URL = 'https://kubus-app.dev/latest.json';
 const UPDATE_CHECK_TIMEOUT_MS = 10_000;
 
 let mainWindow: BrowserWindow | undefined;
 let server: RunningServer | undefined;
 let closing: Promise<void> | undefined;
 let updateCheck: Promise<UpdateCheckResult> | undefined;
+
+// ---- kubus:// deep links -------------------------------------------------
+// The client is served from a random localhost port, so shareable links use
+// the kubus:// scheme and carry only the in-app route; the renderer's router
+// resolves it against whatever origin this instance runs on.
+
+const PROTOCOL = 'kubus';
+let pendingRoute: string | undefined;
+// True once the renderer has called kubus:get-pending-route, i.e. its route
+// listener is attached. Pushing before that (did-finish-load fires before the
+// SPA mounts) would drop the link on cold start.
+let rendererRouteReady = false;
+
+/** kubus://r/apps/v1/deployments?sel=… → "/r/apps/v1/deployments?sel=…". */
+function routeFromDeepLink(raw: string): string | undefined {
+  if (!raw.startsWith(`${PROTOCOL}://`)) return undefined;
+  const rest = raw.slice(`${PROTOCOL}://`.length);
+  const route = rest.startsWith('/') ? rest : `/${rest}`;
+  // Reject protocol-relative smuggling — only same-app routes may pass.
+  return route.startsWith('//') ? undefined : route;
+}
+
+function openRoute(route: string): void {
+  const win = mainWindow;
+  if (win && rendererRouteReady) {
+    win.webContents.send('kubus:open-route', route);
+  } else {
+    // Cold start or mid-boot: held until the renderer pulls it.
+    pendingRoute = route;
+  }
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+}
+
+if (app.isPackaged) {
+  app.setAsDefaultProtocolClient(PROTOCOL);
+} else if (process.argv[1]) {
+  // Dev: register with explicit args so the OS can relaunch this checkout.
+  app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+}
+
+// macOS delivers deep links via open-url (cold starts queue until the window loads).
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const route = routeFromDeepLink(url);
+  if (route) openRoute(route);
+});
 
 interface WindowState {
   width: number;
@@ -72,6 +121,7 @@ type UpdateCheckResult =
 interface AppInfo {
   name: string;
   version: string;
+  helmEngine: boolean;
 }
 
 const windowStateFile = () => path.join(app.getPath('userData'), 'window-state.json');
@@ -277,6 +327,11 @@ function createWindow(url: string): void {
   });
   mainWindow.on('closed', () => {
     mainWindow = undefined;
+    rendererRouteReady = false;
+  });
+  // A reload restarts the SPA; hold routes until it re-registers.
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererRouteReady = false;
   });
   mainWindow.webContents.setWindowOpenHandler(({ url: external }) => {
     void shell.openExternal(external);
@@ -287,11 +342,24 @@ function createWindow(url: string): void {
   // whole window when nothing is docked. preventDefault() stops the native menu
   // accelerator from firing (and keeps the key out of the page).
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.key.toLowerCase() !== 'w' || input.alt || input.shift) return;
-    const closeChord = isMac ? input.meta && !input.control : input.control && !input.meta;
-    if (!closeChord) return;
-    event.preventDefault();
-    mainWindow?.webContents.send('kubus:close-tab');
+    if (input.type !== 'keyDown') return;
+    const key = input.key.toLowerCase();
+    // Cmd/Ctrl+W closes the focused dock/page tab — never the window.
+    if (key === 'w' && !input.alt && !input.shift && (isMac ? input.meta && !input.control : input.control && !input.meta)) {
+      event.preventDefault();
+      mainWindow?.webContents.send('kubus:close-tab');
+      return;
+    }
+    // Browser-style page-tab cycling; the payload is true to cycle backwards.
+    if (input.control && !input.meta && !input.alt && (key === 'tab' || key === 'pageup' || key === 'pagedown')) {
+      event.preventDefault();
+      mainWindow?.webContents.send('kubus:cycle-tab', key === 'tab' ? input.shift : key === 'pageup');
+      return;
+    }
+    if (isMac && input.meta && input.shift && !input.control && !input.alt && (input.code === 'BracketLeft' || input.code === 'BracketRight')) {
+      event.preventDefault();
+      mainWindow?.webContents.send('kubus:cycle-tab', input.code === 'BracketLeft');
+    }
   });
   void mainWindow.loadURL(url);
 }
@@ -314,41 +382,79 @@ ipcMain.on('kubus:set-titlebar-overlay', (event, options: unknown) => {
   }
 });
 
-ipcMain.on('kubus:state:get-item', (event, name: unknown) => {
-  event.returnValue = isMainWindowSender(event) && typeof name === 'string' ? (loadClientState()[name] ?? null) : null;
+// One sync call, at preload time only: the boot snapshot the bridge serves
+// getItem from. A sync handler must set returnValue on every path — a missed
+// reply parks the renderer main thread forever.
+ipcMain.on('kubus:state:get-all', (event) => {
+  try {
+    event.returnValue = isMainWindowSender(event) ? { ...loadClientState() } : {};
+  } catch {
+    event.returnValue = {};
+  }
 });
 
-ipcMain.on('kubus:state:set-item', (event, name: unknown, value: unknown) => {
-  if (!isMainWindowSender(event) || typeof name !== 'string' || typeof value !== 'string') {
-    event.returnValue = false;
-    return;
+// Steady-state writes are fire-and-forget so the renderer never blocks on
+// persistence; bursts (fast clicking flips several stores at once) coalesce
+// into one disk write.
+const STATE_FLUSH_MS = 150;
+const STATE_RETRY_MS = 5_000;
+let stateFlushTimer: NodeJS.Timeout | undefined;
+let pendingClientState: Record<string, string> | undefined;
+
+function scheduleClientStateFlush(state: Record<string, string>, delay = STATE_FLUSH_MS): void {
+  pendingClientState = state;
+  clientStateCache = state;
+  stateFlushTimer ??= setTimeout(() => {
+    stateFlushTimer = undefined;
+    flushClientState();
+  }, delay);
+}
+
+function flushClientState(): void {
+  if (stateFlushTimer !== undefined) {
+    clearTimeout(stateFlushTimer);
+    stateFlushTimer = undefined;
   }
+  const state = pendingClientState;
+  if (!state) return;
   try {
-    saveClientState({ ...loadClientState(), [name]: value });
-    event.returnValue = true;
+    saveClientState(state);
+    pendingClientState = undefined;
   } catch {
-    event.returnValue = false;
+    // Disk write failed (full disk, permissions …): keep the state pending
+    // and retry with backoff, and tell the renderer so it can mirror the
+    // snapshot into browser storage as a fallback.
+    mainWindow?.webContents.send('kubus:state:write-failed');
+    scheduleClientStateFlush(state, STATE_RETRY_MS);
   }
+}
+
+ipcMain.on('kubus:state:set-item', (event, name: unknown, value: unknown) => {
+  if (!isMainWindowSender(event) || typeof name !== 'string' || typeof value !== 'string') return;
+  scheduleClientStateFlush({ ...loadClientState(), [name]: value });
 });
 
 ipcMain.on('kubus:state:remove-item', (event, name: unknown) => {
-  if (!isMainWindowSender(event) || typeof name !== 'string') {
-    event.returnValue = false;
-    return;
-  }
-  try {
-    const next = { ...loadClientState() };
-    delete next[name];
-    saveClientState(next);
-    event.returnValue = true;
-  } catch {
-    event.returnValue = false;
-  }
+  if (!isMainWindowSender(event) || typeof name !== 'string') return;
+  const next = { ...loadClientState() };
+  delete next[name];
+  scheduleClientStateFlush(next);
+});
+
+// The renderer pulls the pending deep link once its route listener is
+// attached; from then on links are pushed over kubus:open-route.
+ipcMain.handle('kubus:get-pending-route', (event): string | null => {
+  if (!isMainWindowSender(event)) return null;
+  rendererRouteReady = true;
+  const route = pendingRoute ?? null;
+  pendingRoute = undefined;
+  return route;
 });
 
 ipcMain.handle('kubus:get-app-info', (event): AppInfo | undefined => {
   if (!isMainWindowSender(event)) return undefined;
-  return { name: app.getName(), version: app.getVersion() };
+  const enginePath = process.env.KUBUS_HELM_ENGINE;
+  return { name: app.getName(), version: app.getVersion(), helmEngine: !!enginePath && existsSync(enginePath) };
 });
 
 ipcMain.handle('kubus:check-for-update', async (event, options?: { force?: unknown }): Promise<UpdateCheckResult> => {
@@ -363,14 +469,27 @@ ipcMain.handle('kubus:check-for-update', async (event, options?: { force?: unkno
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+    // Windows/Linux deliver a deep link to the running instance as an argv
+    // entry of the second process.
+    const link = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+    const route = link ? routeFromDeepLink(link) : undefined;
+    if (route) openRoute(route);
   });
 
   void app.whenReady().then(async () => {
+    // Windows/Linux cold start via a deep link: the URL arrives in our own argv.
+    const link = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+    if (link) pendingRoute = routeFromDeepLink(link);
+    // The esbuild bundle breaks the server's import.meta.url asset lookup, so
+    // point it at the packaged (or repo) helm engine explicitly.
+    process.env.KUBUS_HELM_ENGINE ??= app.isPackaged
+      ? path.join(process.resourcesPath, 'helm-engine.wasm.gz')
+      : path.resolve(__dirname, '../../server/assets/helm-engine.wasm.gz');
     try {
       server = await startServer({
         port: 0,
@@ -396,6 +515,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('before-quit', (event) => {
+    flushClientState();
     if (!server) return;
     if (!closing) {
       closing = server.close().catch(() => undefined);

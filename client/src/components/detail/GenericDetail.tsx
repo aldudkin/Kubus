@@ -9,6 +9,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import type { KubeObject } from '@kubus/shared';
 import { AgeCell, formatAge } from '../AgeCell.js';
 import { StatusChip } from '../StatusChip.js';
@@ -38,12 +39,40 @@ export function KeyValueSection({ title, entries, defaultOpen = true }: { title:
   );
 }
 
+/** Href for values that are plain web links; anything else (other schemes, garbage) stays inert. */
+function safeHref(value: string): string | undefined {
+  if (!/^https?:\/\//i.test(value)) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function ChipList({ items }: { items: Array<[string, string]> }) {
   return (
     <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.5 }}>
-      {items.map(([k, v]) => (
-        <Chip key={k} label={`${k}=${v}`} variant="outlined" sx={{ maxWidth: 420 }} title={`${k}=${v}`} />
-      ))}
+      {items.map(([k, v]) => {
+        const href = safeHref(v);
+        return href ? (
+          <Chip
+            key={k}
+            component="a"
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            clickable
+            icon={<OpenInNewIcon sx={{ fontSize: 14 }} />}
+            label={`${k}=${v}`}
+            variant="outlined"
+            sx={{ maxWidth: 420 }}
+            title={`Open ${v}`}
+          />
+        ) : (
+          <Chip key={k} label={`${k}=${v}`} variant="outlined" sx={{ maxWidth: 420 }} title={`${k}=${v}`} />
+        );
+      })}
     </Stack>
   );
 }
@@ -78,7 +107,9 @@ export function ConditionChips({ obj, goodWhen }: { obj: KubeObject; goodWhen?: 
         return (
           <Tooltip key={c.type} title={tip}>
             <Chip
-              label={c.type}
+              // A red "Available" reads as a contradiction — spell out the
+              // status whenever the condition is off its healthy value.
+              label={healthy ? c.type : `${c.type}: ${c.status}`}
               size="small"
               variant="outlined"
               color={unknown ? 'default' : healthy ? 'success' : 'error'}
@@ -91,16 +122,13 @@ export function ConditionChips({ obj, goodWhen }: { obj: KubeObject; goodWhen?: 
   );
 }
 
-export function ConditionsTable({ obj, goodWhen }: { obj: KubeObject; goodWhen?: (type: string) => 'True' | 'False' }) {
+export function ConditionsTable({ obj, goodWhen, defaultOpen = true }: { obj: KubeObject; goodWhen?: (type: string) => 'True' | 'False'; defaultOpen?: boolean }) {
   const conditions = objConditions(obj);
   if (!conditions.length) return null;
   return (
-    <Box>
-      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-        Conditions
-      </Typography>
+    <Section title="Conditions" count={conditions.length} defaultOpen={defaultOpen}>
       <ConditionRows conditions={conditions} goodWhen={goodWhen} />
-    </Box>
+    </Section>
   );
 }
 
@@ -128,8 +156,8 @@ export function ConditionRows({ conditions, goodWhen }: { conditions: Condition[
                 <StatusChip status={display} label={c.status} />
               </TableCell>
               <TableCell>{c.reason ?? ''}</TableCell>
-              <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.message}>
-                {c.message ?? ''}
+              <TableCell title={c.message}>
+                <Box sx={{ maxWidth: 320, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.message ?? ''}</Box>
               </TableCell>
               <TableCell>
                 <AgeCell timestamp={c.lastTransitionTime} />
@@ -180,7 +208,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <TableRow>
       <TableCell sx={{ width: 140, color: 'text.secondary', border: 0 }}>{label}</TableCell>
-      <TableCell sx={{ border: 0, wordBreak: 'break-all' }}>{value}</TableCell>
+      <TableCell sx={{ border: 0, wordBreak: 'break-word' }}>{value}</TableCell>
     </TableRow>
   );
 }

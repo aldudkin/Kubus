@@ -1,16 +1,16 @@
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
-import Divider from '@mui/material/Divider';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
-import Typography from '@mui/material/Typography';
 import type { KubeObject } from '@kubus/shared';
-import { GenericDetail, ConditionsTable } from './GenericDetail.js';
+import { GenericDetail, ConditionsTable, hasUnhealthyCondition } from './GenericDetail.js';
 import { PodMiniList } from './PodMiniList.js';
+import { Section } from './Section.js';
+import { CopyValueButton } from '../CellCopy.js';
 import { StatusChip } from '../StatusChip.js';
 import { formatBytes } from '../format.js';
 import { nodeRoles, nodeStatus, parseQuantity } from '../../kube-display.js';
@@ -37,6 +37,7 @@ export function NodeDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
   const status = (obj.status ?? {}) as NodeStatus;
   const name = obj.metadata.name;
   const roles = nodeRoles(obj);
+  const providerID = (obj.spec as { providerID?: string } | undefined)?.providerID;
   const podsQuery = useResourceList({ ctx, group: '', version: 'v1', plural: 'pods', fieldSelector: `spec.nodeName=${name}` });
 
   const resourceKeys = ['cpu', 'memory', 'pods', 'ephemeral-storage'].filter((k) => status.capacity?.[k] !== undefined || status.allocatable?.[k] !== undefined);
@@ -52,28 +53,30 @@ export function NodeDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
         {status.nodeInfo?.containerRuntimeVersion && <Chip label={status.nodeInfo.containerRuntimeVersion} variant="outlined" />}
       </Stack>
       <Stack spacing={2} sx={{ px: 2, pt: 2 }}>
-        {!!status.addresses?.length && (
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Addresses
-            </Typography>
+        {(!!status.addresses?.length || providerID) && (
+          <Section title="Addresses">
             <Table size="small">
               <TableBody>
-                {status.addresses.map((a) => (
+                {(status.addresses ?? []).map((a) => (
                   <TableRow key={`${a.type}:${a.address}`}>
                     <TableCell sx={{ width: 140, color: 'text.secondary', border: 0 }}>{a.type}</TableCell>
                     <TableCell sx={{ border: 0 }}>{a.address}</TableCell>
                   </TableRow>
                 ))}
+                {providerID && (
+                  <TableRow>
+                    <TableCell sx={{ width: 140, color: 'text.secondary', border: 0 }}>Provider ID</TableCell>
+                    <TableCell sx={{ border: 0, fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-word' }}>
+                      {providerID} <CopyValueButton text={providerID} label="Copy provider ID" />
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
-          </Box>
+          </Section>
         )}
         {resourceKeys.length > 0 && (
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Capacity
-            </Typography>
+          <Section title="Capacity">
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -92,11 +95,12 @@ export function NodeDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
                 ))}
               </TableBody>
             </Table>
-          </Box>
+          </Section>
         )}
-        <ConditionsTable obj={obj} goodWhen={nodeGoodWhen} />
-        <Divider />
-        <PodMiniList ctx={ctx} pods={podsQuery.data?.items ?? []} title="Pods on this node" loading={podsQuery.isLoading} />
+        <ConditionsTable obj={obj} goodWhen={nodeGoodWhen} defaultOpen={hasUnhealthyCondition(obj, nodeGoodWhen)} />
+        <Section title="Pods on this node" count={podsQuery.isLoading ? undefined : (podsQuery.data?.items ?? []).length}>
+          <PodMiniList ctx={ctx} pods={podsQuery.data?.items ?? []} loading={podsQuery.isLoading} />
+        </Section>
       </Stack>
       <GenericDetail obj={obj} ctx={ctx} hideConditions />
     </Box>

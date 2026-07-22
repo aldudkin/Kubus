@@ -1,6 +1,9 @@
-import { useMemo } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import ButtonBase from '@mui/material/ButtonBase';
+import CircularProgress from '@mui/material/CircularProgress';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
@@ -8,13 +11,7 @@ import Grid from '@mui/material/Grid';
 import LinearProgress from '@mui/material/LinearProgress';
 import Skeleton from '@mui/material/Skeleton';
 import Stack from '@mui/material/Stack';
-import Table from '@mui/material/Table';
-import TableBody from '@mui/material/TableBody';
-import TableCell from '@mui/material/TableCell';
-import TableHead from '@mui/material/TableHead';
-import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import { alpha } from '@mui/material/styles';
 import DnsOutlinedIcon from '@mui/icons-material/DnsOutlined';
 import WorkspacesOutlinedIcon from '@mui/icons-material/WorkspacesOutlined';
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
@@ -24,35 +21,115 @@ import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import ExtensionOutlinedIcon from '@mui/icons-material/ExtensionOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
+import VerifiedUserOutlinedIcon from '@mui/icons-material/VerifiedUserOutlined';
+import AddIcon from '@mui/icons-material/Add';
 import { useNavigate } from 'react-router';
-import { useNodeMetrics, useOverview } from '../api/queries.js';
+import { useContexts, useKubeconfigSettings, useNodeMetrics, useOverview, useOverviewCertificates, useOverviewOperators } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
-import { AgeCell } from '../components/AgeCell.js';
 import { ClusterSectionHeader } from '../components/ClusterSectionHeader.js';
-import { EmptyState } from '../components/EmptyState.js';
 import { InstallMetricsServerButton } from '../components/MetricsServerControls.js';
-import { StatusChip } from '../components/StatusChip.js';
 import { formatBytes, formatCpu } from '../components/format.js';
+import { CertExpiryCard } from '../components/overview/CertExpiryCard.js';
+import { FailingPodsCard, ProblemCard, StatCard, WarningEventsCard } from '../components/overview/cards.js';
+import { NamespaceOverviewSection } from '../components/overview/NamespaceOverviewSection.js';
+import { OperatorSection } from '../components/overview/OperatorSection.js';
+import { PodUsagePanels } from '../components/overview/PodUsagePanels.js';
+import { WorkloadHealthSection } from '../components/overview/WorkloadHealthSection.js';
+
+// Adding a cluster pulls the settings chunk (js-yaml); keep it lazy here.
+const AddClusterDialog = lazy(() => import('../components/settings/AddClusterDialog.js').then((m) => ({ default: m.AddClusterDialog })));
+
+const HEALTH_COLOR: Record<string, string> = { connected: 'success.main', connecting: 'warning.main', error: 'error.main' };
+
+/**
+ * First-run path: instead of pointing at the cluster switcher, list the
+ * kubeconfig's contexts for one-click connect, or lead straight into the
+ * add-cluster flow when the kubeconfig is empty.
+ */
+function WelcomeState() {
+  // Selecting drives the ClusterSwitcher's keep-healthy effect, which owns
+  // connecting — no second connect path here.
+  const setSelected = useClustersStore((s) => s.setSelected);
+  const { data: contexts, isLoading } = useContexts({ poll: false });
+  const { data: kubeconfig } = useKubeconfigSettings();
+  const [addOpen, setAddOpen] = useState(false);
+  const shown = (contexts ?? []).slice(0, 8);
+
+  return (
+    <Stack sx={{ flex: 1, alignItems: 'center', justifyContent: 'center', p: 3, minHeight: '100%' }} spacing={2}>
+      <Box component="img" src="/kubus.svg" alt="" aria-hidden sx={{ width: 48, height: 54, objectFit: 'contain' }} />
+      <Typography variant="h5" sx={{ fontWeight: 700 }}>
+        Welcome to Kubus
+      </Typography>
+      {isLoading && <CircularProgress size={22} />}
+      {!isLoading && shown.length > 0 && (
+        <>
+          <Typography variant="body2" color="text.secondary">
+            Pick a cluster from your kubeconfig to get started.
+          </Typography>
+          <Stack spacing={1} sx={{ width: 'min(520px, 100%)' }}>
+            {shown.map((c) => (
+              <ButtonBase
+                key={c.name}
+                onClick={() => setSelected([c.name])}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.25,
+                  px: 1.75,
+                  py: 1.25,
+                  border: 1,
+                  borderColor: 'divider',
+                  borderRadius: 1.5,
+                  textAlign: 'left',
+                  justifyContent: 'flex-start',
+                  '&:hover': { bgcolor: 'action.hover', borderColor: 'primary.main' },
+                }}
+              >
+                <Box sx={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, bgcolor: HEALTH_COLOR[c.health] ?? 'text.disabled' }} />
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                    {c.name}
+                  </Typography>
+                  {c.server && (
+                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                      {c.server}
+                    </Typography>
+                  )}
+                </Box>
+                {c.current && <Chip label="current" size="small" variant="outlined" sx={{ flexShrink: 0 }} />}
+              </ButtonBase>
+            ))}
+            {(contexts?.length ?? 0) > shown.length && (
+              <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
+                …and {(contexts?.length ?? 0) - shown.length} more in the cluster switcher above.
+              </Typography>
+            )}
+          </Stack>
+        </>
+      )}
+      {!isLoading && shown.length === 0 && (
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 440, textAlign: 'center' }}>
+          No clusters found in your kubeconfig. Add one by pasting a kubeconfig or entering connection details.
+        </Typography>
+      )}
+      <Button variant={shown.length === 0 ? 'contained' : 'outlined'} startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
+        Add cluster
+      </Button>
+      {addOpen && (
+        <Suspense fallback={null}>
+          <AddClusterDialog primaryPath={kubeconfig?.primaryPath ?? null} onClose={() => setAddOpen(false)} />
+        </Suspense>
+      )}
+    </Stack>
+  );
+}
 
 export function OverviewPage() {
   const selected = useClustersStore((s) => s.selected);
 
   if (selected.length === 0) {
-    return (
-      <EmptyState
-        icon={
-          <Box
-            component="img"
-            src="/kubus.svg"
-            alt=""
-            aria-hidden
-            sx={{ width: 48, height: 54, objectFit: 'contain' }}
-          />
-        }
-        title="Welcome to Kubus"
-        subtitle="Select one or more clusters in the top bar to get started."
-      />
-    );
+    return <WelcomeState />;
   }
 
   return (
@@ -65,13 +142,29 @@ export function OverviewPage() {
 }
 
 function ClusterOverviewSection({ ctx }: { ctx: string }) {
-  const { data, isLoading, error } = useOverview(ctx);
-  const { data: nodeMetrics } = useNodeMetrics(ctx);
-  const navigate = useNavigate();
+  // The global namespace filter scopes the whole overview: with namespaces
+  // selected in the nav this section becomes the namespace-level view.
+  const namespaces = useClustersStore((s) => s.namespaces);
 
   return (
     <Box>
       <ClusterSectionHeader ctx={ctx} />
+      {namespaces.length > 0 ? <NamespaceOverviewSection ctx={ctx} namespaces={namespaces} /> : <WholeClusterSection ctx={ctx} />}
+    </Box>
+  );
+}
+
+function WholeClusterSection({ ctx }: { ctx: string }) {
+  const { data, isLoading, error } = useOverview(ctx);
+  const { data: nodeMetrics } = useNodeMetrics(ctx);
+  // Slow-warmup sections (all-secrets watcher, operator CR lists, API-server
+  // TLS probe) arrive on their own; the core stats never wait for them.
+  const { data: operators } = useOverviewOperators(ctx);
+  const { data: certificates } = useOverviewCertificates(ctx);
+  const navigate = useNavigate();
+
+  return (
+    <>
       {isLoading && <OverviewSkeleton />}
       {error && <Alert severity="error">{error.message}</Alert>}
       {data && (
@@ -117,6 +210,17 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
               icon={<Inventory2OutlinedIcon />}
             />
             <StatCard
+              label="TLS certificates"
+              value={certificates ? (certificates.expiring.length > 0 ? certificates.expiring.length : certificates.total) : <Skeleton width={32} />}
+              sub={certificates ? (certificates.expiring.length > 0 ? 'expiring <30d' : 'tracked') : undefined}
+              warn={(certificates?.expiring.length ?? 0) > 0}
+              icon={<VerifiedUserOutlinedIcon />}
+              onClick={() => {
+                const certs = operators?.find((o) => o.id === 'cert-manager')?.resources.find((r) => r.plural === 'certificates');
+                void navigate(certs ? `/r/${certs.group}/${certs.version}/${certs.plural}` : '/r/core/v1/secrets');
+              }}
+            />
+            <StatCard
               label="Failing pods"
               value={data.failingPods.length}
               warn={data.failingPods.length > 0}
@@ -134,52 +238,15 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
 
           {data.counts.nodes > 0 && <NodeUsageCard ctx={ctx} nodeMetrics={nodeMetrics} />}
 
-          {data.failingPods.length > 0 && (
-            <ProblemCard title="Failing pods">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Pod</TableCell>
-                    <TableCell>Reason</TableCell>
-                    <TableCell>Restarts</TableCell>
-                    <TableCell>Message</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {data.failingPods.map((p) => (
-                    <TableRow key={`${p.namespace}/${p.name}`} hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/r/core/v1/pods?sel=${ctx}|${p.namespace}|${p.name}`)}>
-                      <TableCell>
-                        {p.namespace}/{p.name}
-                      </TableCell>
-                      <TableCell>
-                        <StatusChip status={p.reason} />
-                      </TableCell>
-                      <TableCell>{p.restarts}</TableCell>
-                      <TableCell sx={{ maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.message}>
-                        {p.message ?? ''}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ProblemCard>
-          )}
+          <WorkloadHealthSection ctx={ctx} health={data.workloadHealth} issues={data.unavailableWorkloads} />
 
-          {data.unavailableWorkloads.length > 0 && (
-            <ProblemCard title="Unavailable workloads">
-              <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
-                {data.unavailableWorkloads.map((w) => (
-                  <Chip
-                    key={`${w.namespace}/${w.name}`}
-                    label={`${w.namespace}/${w.name} ${w.ready}/${w.desired}`}
-                    color="warning"
-                    variant="outlined"
-                    onClick={() => navigate(`/r/apps/v1/deployments?sel=${ctx}|${w.namespace}|${w.name}`)}
-                  />
-                ))}
-              </Stack>
-            </ProblemCard>
-          )}
+          {operators && <OperatorSection ctx={ctx} operators={operators} />}
+
+          {certificates && <CertExpiryCard ctx={ctx} certificates={certificates} />}
+
+          <PodUsagePanels ctx={ctx} />
+
+          <FailingPodsCard ctx={ctx} pods={data.failingPods} />
 
           {data.recentRestarts.length > 0 && (
             <ProblemCard title="Recent restarts (1h)">
@@ -191,40 +258,22 @@ function ClusterOverviewSection({ ctx }: { ctx: string }) {
             </ProblemCard>
           )}
 
-          {data.warningEvents.length > 0 && (
-            <ProblemCard title="Warning events (1h)">
-              <Stack spacing={0.5}>
-                {data.warningEvents.slice(0, 15).map((e) => (
-                  <Typography
-                    key={`${e.namespace}/${e.involvedKind}/${e.involvedName}/${e.reason}/${e.lastTimestamp ?? ''}/${e.message}`}
-                    variant="body2"
-                  >
-                    <Typography component="span" variant="body2" sx={{ color: 'warning.main', fontWeight: 600 }}>
-                      {e.reason}
-                    </Typography>
-                    {e.count > 1 && (
-                      <Typography component="span" variant="caption" sx={{ fontWeight: 600 }}>
-                        {' '}({e.count}x)
-                      </Typography>
-                    )}{' '}
-                    <Typography component="span" variant="caption" color="text.secondary">
-                      <AgeCell timestamp={e.lastTimestamp} /> ago
-                    </Typography>{' '}
-                    — {e.involvedKind}/{e.namespace ? `${e.namespace}/` : ''}{e.involvedName}: {e.message}
-                  </Typography>
-                ))}
-              </Stack>
-            </ProblemCard>
-          )}
+          <WarningEventsCard ctx={ctx} events={data.warningEvents} />
 
-          {data.failingPods.length === 0 && data.unavailableWorkloads.length === 0 && data.warningEvents.length === 0 && (
-            <Alert severity="success" variant="outlined">
-              No problems detected — all workloads healthy.
-            </Alert>
-          )}
+          {data.failingPods.length === 0 &&
+            data.unavailableWorkloads.length === 0 &&
+            data.warningEvents.length === 0 &&
+            certificates &&
+            certificates.expiring.length === 0 &&
+            operators &&
+            operators.every((op) => op.resources.every((r) => r.issues.length === 0 && r.ready >= r.total)) && (
+              <Alert severity="success" variant="outlined">
+                No problems detected — all workloads healthy.
+              </Alert>
+            )}
         </>
       )}
-    </Box>
+    </>
   );
 }
 
@@ -233,8 +282,8 @@ function OverviewSkeleton() {
   return (
     <>
       <Grid container spacing={1.5} sx={{ mb: 2 }}>
-        {Array.from({ length: 8 }, (_, i) => (
-          <Grid key={i} size={{ xs: 6, sm: 4, md: 2 }}>
+        {Array.from({ length: 10 }, (_, i) => (
+          <Grid key={i} size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
             <Skeleton variant="rounded" height={62} />
           </Grid>
         ))}
@@ -264,8 +313,10 @@ function NodeUsageCard({ ctx, nodeMetrics }: { ctx: string; nodeMetrics: ReturnT
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
           Node usage
         </Typography>
-        {!nodeMetrics && <LinearProgress />}
-        {nodeMetrics && !nodeMetrics.available && (
+        {/* Before the first poller probe completes, "unavailable" is provisional —
+            keep the progress bar instead of a false install prompt. */}
+        {(!nodeMetrics || !nodeMetrics.probed) && <LinearProgress />}
+        {nodeMetrics?.probed && !nodeMetrics.available && (
           <Alert severity="info" variant="outlined" sx={{ alignItems: 'center' }} action={<InstallMetricsServerButton ctx={ctx} />}>
             CPU and memory usage are unavailable — metrics-server is not serving data in this cluster.
           </Alert>
@@ -306,102 +357,6 @@ function NodeUsageCard({ ctx, nodeMetrics }: { ctx: string; nodeMetrics: ReturnT
             ))}
           </Stack>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  sub,
-  warn,
-  icon,
-  onClick,
-}: {
-  label: string;
-  value: number | string;
-  sub?: string;
-  warn?: boolean;
-  icon?: React.ReactElement;
-  onClick?: () => void;
-}) {
-  return (
-    <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-      <Card
-        variant="outlined"
-        onClick={onClick}
-        role={onClick ? 'button' : undefined}
-        tabIndex={onClick ? 0 : undefined}
-        onKeyDown={(event) => {
-          if (!onClick) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onClick();
-          }
-        }}
-        sx={(theme) => ({
-          height: '100%',
-          cursor: onClick ? 'pointer' : 'default',
-          borderColor: warn ? 'warning.main' : undefined,
-          transition: 'border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease',
-          ...(onClick && {
-            '&:hover': {
-              borderColor: warn ? 'warning.main' : 'primary.main',
-              transform: 'translateY(-1px)',
-              boxShadow: `0 4px 14px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.35 : 0.08)}`,
-            },
-          }),
-        })}
-      >
-        <CardContent sx={{ py: '12px !important', display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          {icon && (
-            <Box
-              sx={(theme) => {
-                const main = warn ? theme.palette.warning.main : theme.palette.primary.main;
-                return {
-                  width: 36,
-                  height: 36,
-                  borderRadius: 2,
-                  flexShrink: 0,
-                  display: 'grid',
-                  placeItems: 'center',
-                  color: main,
-                  bgcolor: alpha(main, theme.palette.mode === 'dark' ? 0.14 : 0.08),
-                  '& svg': { fontSize: 20 },
-                };
-              }}
-            >
-              {icon}
-            </Box>
-          )}
-          <Box sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
-              {label}
-            </Typography>
-            <Typography variant="h6" color={warn ? 'warning.main' : undefined} noWrap>
-              {value}
-              {sub && (
-                <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
-                  {sub}
-                </Typography>
-              )}
-            </Typography>
-          </Box>
-        </CardContent>
-      </Card>
-    </Grid>
-  );
-}
-
-function ProblemCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <Card variant="outlined" sx={{ mb: 2 }}>
-      <CardContent sx={{ py: 1.5 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          {title}
-        </Typography>
-        {children}
       </CardContent>
     </Card>
   );

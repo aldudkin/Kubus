@@ -6,6 +6,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { KubeObject, TlsCertInfo } from '@kubus/shared';
 import { GenericDetail } from './GenericDetail.js';
+import { Section } from './Section.js';
 import { useSecretTls } from '../../api/queries.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -40,29 +41,27 @@ export function SecretDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
       </Stack>
       <Stack spacing={2} sx={{ px: 2, pt: 2 }}>
         {keys.length > 0 && (
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Data keys
-            </Typography>
+          <Section title="Data keys" count={keys.length}>
             <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.5 }}>
               {keys.map((k) => (
                 <Chip key={k} label={k} variant="outlined" />
               ))}
             </Stack>
-            <Typography variant="caption" color="text.secondary">
-              Values are redacted — use the YAML tab with “Reveal secret data” to inspect them.
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              Values are redacted — reveal, copy or edit them per key in the Data tab.
             </Typography>
-          </Box>
+          </Section>
         )}
         {isTls &&
           (tls.data?.certificates ?? []).map((cert, i) => (
-            <Card key={cert.serialNumber || i} variant="outlined">
+            <Card key={`${cert.source ?? ''}:${cert.serialNumber || i}`} variant="outlined">
               <CardContent sx={{ '&:last-child': { pb: 2 } }}>
                 <Stack direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Typography variant="subtitle2">{commonName(cert.subject)}</Typography>
                   {expiryChip(cert)}
                   {cert.isCA && <Chip label="CA" variant="outlined" />}
                   {cert.selfSigned && <Chip label="self-signed" variant="outlined" />}
+                  {cert.source && cert.source !== 'tls.crt' && <Chip label={cert.source} variant="outlined" color="secondary" />}
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
                   Issuer: {commonName(cert.issuer)}
@@ -70,6 +69,11 @@ export function SecretDetail({ obj, ctx }: { obj: KubeObject; ctx: string }) {
                 <Typography variant="body2" color="text.secondary">
                   Valid: {new Date(cert.notBefore).toLocaleDateString()} → {new Date(cert.notAfter).toLocaleDateString()}
                 </Typography>
+                {cert.publicKeyAlgorithm && (
+                  <Typography variant="body2" color="text.secondary">
+                    Algorithm: {cert.publicKeyAlgorithm}
+                  </Typography>
+                )}
                 <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
                   Serial: {cert.serialNumber}
                 </Typography>

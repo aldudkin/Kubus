@@ -3,6 +3,8 @@
 export interface AppInfo {
   name: string;
   version: string;
+  /** True when the wasm helm rendering engine is available (install/upgrade enabled). */
+  helmEngine: boolean;
 }
 
 export type UpdateCheckResult =
@@ -239,12 +241,23 @@ export interface FavoriteItem {
   ref?: ResourceRef;
 }
 
+/** Grid state snapshotted with a saved view so restoring brings back the exact table. */
+export interface SavedViewGridState {
+  /** Global namespace filter at save time (empty = all namespaces). */
+  namespaces?: string[];
+  sort?: ReadonlyArray<{ field: string; sort: 'asc' | 'desc' | null | undefined }>;
+  columnVisibility?: Record<string, boolean>;
+  columnWidths?: Record<string, number>;
+}
+
 export interface SavedView {
   id: string;
   title: string;
   path: string;
   textFilter?: string;
   labelSelector?: string;
+  /** Absent on views saved before grid capture existed — those restore the query only. */
+  grid?: SavedViewGridState;
 }
 
 // ---- Topology graph ----
@@ -296,6 +309,8 @@ export interface ApiErrorBody {
   reason?: string;
   code?: number;
   k8sStatus?: unknown;
+  /** Structured, operation-specific context for actionable recovery UI. */
+  details?: unknown;
 }
 
 // ---- Actions ----
@@ -347,18 +362,13 @@ export interface DrainStartedResponse {
   totalPods: number;
 }
 
-export interface TriggerCronJobRequest {
-  namespace: string;
-  name: string;
-}
-
 export interface RerunJobRequest {
   namespace: string;
   name: string;
 }
 
 export interface RolloutUndoRequest {
-  kind: 'Deployment' | 'StatefulSet';
+  kind: 'Deployment' | 'StatefulSet' | 'DaemonSet';
   namespace: string;
   name: string;
   /** Omitted: roll back to the latest non-current revision. */
@@ -383,6 +393,9 @@ export interface RolloutRevision {
   replicas?: number;
 }
 
+/** kubectl-debug style security profile applied to the ephemeral container. */
+export type DebugProfile = 'general' | 'restricted' | 'netadmin' | 'sysadmin';
+
 export interface DebugPodRequest {
   namespace: string;
   pod: string;
@@ -390,6 +403,8 @@ export interface DebugPodRequest {
   image?: string;
   /** Container whose process namespace the debug container targets. */
   target?: string;
+  /** Security profile; defaults to general (no extra privileges). */
+  profile?: DebugProfile;
 }
 
 export interface DebugPodResponse {
@@ -407,6 +422,7 @@ export interface HelmRollbackResult {
   applied: string[];
   pruned: string[];
   failed: Array<{ resource: string; error: string }>;
+  hooksRan: string[];
 }
 
 /** A CRD additionalPrinterColumns entry (apiextensions.k8s.io/v1). */
@@ -446,6 +462,10 @@ export interface TlsCertInfo {
   sans: string[];
   isCA: boolean;
   selfSigned: boolean;
+  /** Public key algorithm and strength, e.g. "RSA 2048" / "ECDSA prime256v1". */
+  publicKeyAlgorithm?: string;
+  /** Secret data key the certificate came from (tls.crt, ca.crt or ca.tls). */
+  source?: string;
 }
 
 export interface SecretTlsResponse {
@@ -454,7 +474,11 @@ export interface SecretTlsResponse {
 
 // ---- Logs ----
 
-export type LogTargetKind = 'Pod' | 'Deployment' | 'ReplicaSet' | 'StatefulSet' | 'DaemonSet' | 'Service';
+/** Application close codes used by the logs WebSocket. */
+export const LOG_SOCKET_COMPLETE_CODE = 4000;
+export const LOG_SOCKET_NO_STREAMS_CODE = 4001;
+
+export type LogTargetKind = 'Pod' | 'Deployment' | 'ReplicaSet' | 'StatefulSet' | 'DaemonSet' | 'Service' | 'Job';
 
 export interface LogTargetPod {
   name: string;
@@ -497,11 +521,15 @@ export interface MetricsSnapshotEntry {
 
 export interface MetricsSnapshot {
   available: boolean;
+  /** At least one metrics probe has completed — until then `available` is provisional. */
+  probed: boolean;
   items: MetricsSnapshotEntry[];
 }
 
 export interface MetricsHistoryResponse {
   available: boolean;
+  /** At least one metrics probe has completed — until then `available` is provisional. */
+  probed: boolean;
   series: MetricsSample[];
 }
 
@@ -670,8 +698,45 @@ export interface OverviewWorkloadIssue {
   kind: string;
   namespace: string;
   name: string;
+  /** Replica-shaped kinds only (Deployment ready/desired, PDB healthy/desired…). */
+  ready?: number;
+  desired?: number;
+  /** Short machine-ish cause: Unavailable, Failed, Pending, NoDisruptionsAllowed, AtQuota… */
+  reason?: string;
+  message?: string;
+}
+
+/** Per-kind rollup for the unified workload-health section. */
+export interface OverviewKindHealth {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  total: number;
+  unhealthy: number;
+  /** Resource API missing or RBAC-denied on this cluster. */
+  unavailable?: boolean;
+}
+
+export interface OperatorResourceRollup {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  namespaced: boolean;
+  total: number;
   ready: number;
-  desired: number;
+  issues: OverviewWorkloadIssue[];
+  /** Resource API missing or RBAC-denied — counts are unknown, not zero. */
+  unavailable?: boolean;
+}
+
+export interface OperatorRollup {
+  /** Stable slug: cert-manager, argo, flux, keda, karpenter. */
+  id: string;
+  /** Display name. */
+  name: string;
+  resources: OperatorResourceRollup[];
 }
 
 export interface OverviewWarningEvent {
@@ -680,6 +745,8 @@ export interface OverviewWarningEvent {
   message: string;
   involvedKind: string;
   involvedName: string;
+  /** List GVR and scope of the involved object, resolved via discovery — undefined when the kind is unknown (e.g. uninstalled CRD). */
+  involvedGvr?: { group: string; version: string; plural: string; namespaced: boolean };
   count: number;
   lastTimestamp?: string;
 }
@@ -691,6 +758,28 @@ export interface OverviewRestart {
   restarts: number;
   finishedAt?: string;
   reason?: string;
+}
+
+export interface CertExpiryEntry {
+  source: 'cert-manager' | 'tls-secret';
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  namespace: string;
+  name: string;
+  notAfter: string;
+}
+
+export interface OverviewCertificates {
+  /** Certificates tracked: cert-manager Certificates plus kubernetes.io/tls Secrets (cert-manager-owned secrets deduped). */
+  total: number;
+  /** Expired or expiring within 30 days, soonest first. */
+  expiring: CertExpiryEntry[];
+  /** API server serving certificate expiry (cluster-wide scope only), from the TLS handshake. */
+  apiServerNotAfter?: string;
+  /** Secrets are RBAC-denied — TLS secret expiry unknown. */
+  secretsUnavailable?: boolean;
 }
 
 export interface ClusterOverview {
@@ -712,6 +801,69 @@ export interface ClusterOverview {
   failingPods: OverviewProblemPod[];
   unavailableWorkloads: OverviewWorkloadIssue[];
   recentRestarts: OverviewRestart[];
+  warningEvents: OverviewWarningEvent[];
+  /** Unified per-kind health across workloads, autoscaling, storage, and policy. */
+  workloadHealth: OverviewKindHealth[];
+}
+
+// ---- Pod resource usage vs requests/limits (overview panels) ----
+
+export interface PodResourceUsage {
+  namespace: string;
+  name: string;
+  cpuUsageMilli: number;
+  memUsageBytes: number;
+  /** Summed container requests/limits; 0 = not set on any container. */
+  cpuRequestMilli: number;
+  memRequestBytes: number;
+  cpuLimitMilli: number;
+  memLimitBytes: number;
+}
+
+export interface PodResourcesResponse {
+  /** metrics-server serving data. */
+  available: boolean;
+  pods: PodResourceUsage[];
+}
+
+// ---- Namespace overview ----
+
+export interface NamespaceInventoryEntry {
+  kind: string;
+  group: string;
+  version: string;
+  plural: string;
+  total: number;
+  /** Entries with a health notion (workloads, PVCs, quotas…). */
+  unhealthy?: number;
+  /** Counted from an installed CRD rather than a builtin API. */
+  custom?: boolean;
+  /** Resource API missing or RBAC-denied. */
+  unavailable?: boolean;
+}
+
+export interface NamespaceQuotaResource {
+  resource: string;
+  used: string;
+  hard: string;
+  /** used/hard as 0-100+, undefined when hard is unparsable or zero. */
+  pct?: number;
+}
+
+export interface NamespaceQuotaStatus {
+  name: string;
+  resources: NamespaceQuotaResource[];
+}
+
+export interface NamespaceOverview {
+  namespaces: string[];
+  /** Namespace phase (Active/Terminating) — only when a single namespace is scoped. */
+  status?: string;
+  inventory: NamespaceInventoryEntry[];
+  workloadHealth: OverviewKindHealth[];
+  issues: OverviewWorkloadIssue[];
+  failingPods: OverviewProblemPod[];
+  quotas: NamespaceQuotaStatus[];
   warningEvents: OverviewWarningEvent[];
 }
 
@@ -765,6 +917,8 @@ export interface HelmReleaseSummary {
   chartVersion: string;
   appVersion?: string;
   updated?: string;
+  /** Helm storage backend the release records live in. */
+  driver?: 'secret' | 'configmap';
 }
 
 export interface HelmReleaseDetail extends HelmReleaseSummary {
@@ -773,9 +927,20 @@ export interface HelmReleaseDetail extends HelmReleaseSummary {
   values: Record<string, unknown>;
   /** chart defaults deep-merged with user values. */
   computedValues: Record<string, unknown>;
+  /** Unmodified defaults embedded in this revision's chart. */
+  defaultValues: Record<string, unknown>;
+  /** Upstream chart homepage and source repositories stored in Chart.yaml. */
+  chartHome?: string;
+  chartSources: string[];
   manifest: string;
   firstDeployed?: string;
   description?: string;
+  /** Number of dependencies the chart declares — values-only upgrades need a repo chart when > 0. */
+  chartDependencies: number;
+  /** Number of hooks stored in the release record. */
+  hookCount: number;
+  /** CRDs shipped in the chart's crds/ directory — offered for optional cleanup on uninstall. */
+  chartCrds: string[];
 }
 
 export interface HelmRevision {
@@ -788,15 +953,251 @@ export interface HelmRevision {
   description?: string;
 }
 
+// ---- Helm repos, install & upgrade ----
+
+export interface HelmRepo {
+  name: string;
+  /** Classic http(s) chart repository base URL (serves /index.yaml). */
+  url: string;
+}
+
+export interface HelmChartSummary {
+  repo: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  /** Latest available version. */
+  version: string;
+  appVersion?: string;
+  deprecated?: boolean;
+  keywords?: string[];
+}
+
+export interface HelmChartVersion {
+  version: string;
+  appVersion?: string;
+  description?: string;
+  created?: string;
+  deprecated?: boolean;
+}
+
+/** Chart metadata + default values for the install form. */
+export interface HelmChartDetail {
+  name: string;
+  version: string;
+  appVersion?: string;
+  description?: string;
+  icon?: string;
+  home?: string;
+  sources?: string[];
+  /** Parsed chart defaults. valuesYaml preserves comments for the editor. */
+  values: Record<string, unknown>;
+  valuesYaml: string;
+  readme: string;
+  dependencies?: Array<{ name: string; version: string; repository?: string }>;
+}
+
+/** Where to get a chart archive from. Exactly one source form. */
+export interface HelmChartSourceRef {
+  /** Configured repo name + chart + version. */
+  repo?: string;
+  chart?: string;
+  version?: string;
+  /** Repository base URL (http(s) index repo or oci:// base) + chart + version — used for Artifact Hub discoveries. */
+  repoUrl?: string;
+  /** Direct oci://registry/repo ref (version above selects the tag). */
+  ociRef?: string;
+  /** Direct .tgz URL. */
+  url?: string;
+}
+
+export interface HelmInstallRequest {
+  namespace: string;
+  name: string;
+  values: Record<string, unknown>;
+  chart: HelmChartSourceRef;
+  createNamespace?: boolean;
+  skipHooks?: boolean;
+  /** Wait for workloads to become ready before marking the revision deployed. */
+  wait?: boolean;
+  /** Readiness timeout; only used when wait is true. */
+  timeoutSeconds?: number;
+  dryRun?: boolean;
+}
+
+export interface HelmUpgradeRequest {
+  /** Complete user-supplied values for the new revision (helm -f semantics). */
+  values: Record<string, unknown>;
+  /** Omitted → re-render the chart stored in the release record. */
+  chart?: HelmChartSourceRef;
+  skipHooks?: boolean;
+  /** Wait for workloads to become ready before marking the revision deployed. */
+  wait?: boolean;
+  /** Readiness timeout; only used when wait is true. */
+  timeoutSeconds?: number;
+  dryRun?: boolean;
+}
+
+export interface HelmActionResult {
+  revision: number;
+  applied: string[];
+  pruned: string[];
+  failed: Array<{ resource: string; error: string }>;
+  hooksRan: string[];
+  notes?: string;
+}
+
+export interface HelmUninstallResult {
+  deleted: string[];
+  failed: Array<{ resource: string; error: string }>;
+  hooksRan: string[];
+  crdsDeleted: string[];
+  /** True when records remain so the incomplete operation can be inspected/retried. */
+  recordsRetained: boolean;
+}
+
+export interface HelmDryRunResult {
+  manifest: string;
+  notes: string;
+  hooks: Array<{ name: string; kind: string; events: string[] }>;
+  chart: string;
+  chartVersion: string;
+  /** Fully coalesced values for the candidate revision. */
+  computedValues: Record<string, unknown>;
+  /** Kubernetes API server-side dry-run findings. */
+  validation: HelmResourceValidation[];
+  /** Important limits of the preview validation. */
+  warnings: string[];
+}
+
+export interface HelmResourceValidation {
+  resource: string;
+  status: 'valid' | 'warning' | 'error';
+  message?: string;
+}
+
+export type HelmOperationPhase = 'pre-hook' | 'apply' | 'readiness' | 'prune' | 'post-hook' | 'record';
+
+/** Returned in ApiErrorBody.details when a mutating Helm operation fails. */
+export interface HelmOperationFailure {
+  operation: 'install' | 'upgrade' | 'rollback';
+  phase: HelmOperationPhase;
+  revision?: number;
+  /** Last revision known to have completed successfully, when one exists. */
+  recoveryRevision?: number;
+  applied: string[];
+  pruned: string[];
+  failed: Array<{ resource: string; error: string }>;
+  hooksRan: string[];
+  suggestions: string[];
+}
+
+export type HelmOperationKind = 'install' | 'upgrade' | 'downgrade' | 'rollback';
+export type HelmOperationStatus = 'running' | 'succeeded' | 'failed';
+export type HelmOperationProgressPhase =
+  | 'queued'
+  | 'resolving-chart'
+  | 'rendering'
+  | 'pre-hook'
+  | 'applying'
+  | 'pruning'
+  | 'readiness'
+  | 'post-hook'
+  | 'recording'
+  | 'completed';
+
+export interface HelmOperationWaitingResource {
+  resource: string;
+  message: string;
+}
+
+/**
+ * Live, non-secret progress for a Helm mutation. Values and rendered
+ * manifests are deliberately excluded because this is broadcast to the UI.
+ */
+export interface HelmOperation {
+  id: string;
+  kind: HelmOperationKind;
+  ctx: string;
+  namespace: string;
+  releaseName: string;
+  status: HelmOperationStatus;
+  phase: HelmOperationProgressPhase;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
+  targetVersion?: string;
+  targetRevision?: number;
+  revision?: number;
+  completedResources?: number;
+  totalResources?: number;
+  currentResource?: string;
+  waitingFor?: HelmOperationWaitingResource[];
+  result?: HelmActionResult | HelmRollbackResult;
+  error?: string;
+  failure?: HelmOperationFailure;
+}
+
+export interface HelmOperationStarted {
+  operationId: string;
+}
+
+/** A chart found by exact name in a configured repo or on Artifact Hub (upgrade-source discovery). */
+export interface HelmChartHit {
+  repo: string;
+  versions: HelmChartVersion[];
+  /** Set for Artifact Hub discoveries: the publisher's repository URL (http(s) or oci://). */
+  repoUrl?: string;
+  fromHub?: boolean;
+}
+
+/** An Artifact Hub search result. */
+export interface HelmHubChart {
+  name: string;
+  repoName: string;
+  repoUrl: string;
+  description?: string;
+  icon?: string;
+  version: string;
+  appVersion?: string;
+  official?: boolean;
+  verifiedPublisher?: boolean;
+}
+
+export interface HelmUpdateCheck {
+  /** Caller-stable release identity; echoed by the response. */
+  id: string;
+  chart: string;
+  currentVersion: string;
+  /** Narrows same-name/same-version source collisions when metadata provides it. */
+  currentAppVersion?: string;
+}
+
+export interface HelmChartUpdate {
+  id: string;
+  chart: string;
+  currentVersion: string;
+  currentAppVersion?: string;
+  available: boolean;
+  latestVersion?: string;
+  latestAppVersion?: string;
+  repo?: string;
+  repoUrl?: string;
+  /** Why no safe update could be selected. */
+  reason?: 'up-to-date' | 'chart-not-found' | 'current-version-not-found';
+}
+
 // ---- Port forward ----
+
+export type PortForwardTargetKind = 'pod' | 'service' | 'deployment' | 'statefulset' | 'daemonset' | 'replicaset';
 
 export interface PortForwardInfo {
   id: string;
   ctx: string;
   namespace: string;
-  kind: 'pod' | 'service';
+  kind: PortForwardTargetKind;
   name: string;
-  /** Pod actually being forwarded to (resolved for services). */
+  /** Pod actually being forwarded to (resolved for services and workloads). */
   targetPod?: string;
   remotePort: number;
   localPort: number;
@@ -807,8 +1208,19 @@ export interface PortForwardInfo {
 
 export interface PortForwardRequest {
   namespace: string;
-  kind: 'pod' | 'service';
+  kind: PortForwardTargetKind;
   name: string;
   remotePort: number;
   localPort?: number;
+}
+
+export interface PortForwardPreflightResponse {
+  allowed: boolean;
+  /** RBAC denial reason, when the cluster reports one. */
+  reason?: string;
+}
+
+export interface LocalPortCheckResponse {
+  port: number;
+  available: boolean;
 }

@@ -1,4 +1,5 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { layout, statusTextColor } from '../theme.js';
 import Autocomplete, { createFilterOptions } from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
 import Checkbox from '@mui/material/Checkbox';
@@ -6,16 +7,18 @@ import Chip from '@mui/material/Chip';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams } from '@mui/x-data-grid';
+import { DataGrid, type GridColDef, type GridColumnVisibilityModel, type GridRowParams, type GridSortModel } from '@mui/x-data-grid';
 import type { ClusterRow } from '../api/queries.js';
 import { matchesPlainText, matchesSmartFilter, parseSmartFilter } from '../smart-filter.js';
 import { joinLabelSelector, splitLabelSelector } from '../label-selector.js';
 import { SmartFilterInput } from './SmartFilterInput.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from './CellCopy.js';
 import type { MetricsLookup } from './columns.js';
+import { podSummary } from '../kube-display.js';
 import { useUiPrefsStore } from '../state/prefs.js';
-import { isTextEntryTarget } from '../text-entry.js';
-import { usePaneActive } from '../layout/pane-context.js';
+import { useQuickSearchShortcut } from './quick-search.js';
+import { countLabel } from './format.js';
+import InboxOutlinedIcon from '@mui/icons-material/InboxOutlined';
 
 interface Props {
   rows: ClusterRow[];
@@ -31,7 +34,10 @@ interface Props {
   onFilterChange?: (value: string) => void;
   onLabelSelectorChange?: (value: string) => void;
   onRowClick?: (row: ClusterRow) => void;
-  onRowContextMenu?: (row: ClusterRow, event: MouseEvent<HTMLElement>) => void;
+  /** Keyboard activation (Enter on a cell); lets pages move focus along. */
+  onRowActivate?: (row: ClusterRow) => void;
+  /** Opened by right-click or the ContextMenu / Shift+F10 keys. */
+  onRowContextMenu?: (row: ClusterRow, position: { clientX: number; clientY: number }) => void;
   /** Extra toolbar elements (e.g. create button). */
   toolbar?: ReactNode;
   /** Enable checkbox selection; returns selected rows. */
@@ -46,6 +52,10 @@ interface Props {
 }
 
 const labelFilterOptions = createFilterOptions<string>({ limit: 100 });
+
+const DEFAULT_SORT: GridSortModel = [{ field: 'name', sort: 'asc' }];
+
+const EMPTY_LABEL_OPTIONS: { terms: string[]; keys: Set<string> } = { terms: [], keys: new Set() };
 
 /** All `key` and `key=value` selector terms present in the rows. */
 function labelSelectorOptions(rows: ClusterRow[]): { terms: string[]; keys: Set<string> } {
@@ -72,6 +82,7 @@ export function ResourceTable({
   onFilterChange,
   onLabelSelectorChange,
   onRowClick,
+  onRowActivate,
   onRowContextMenu,
   toolbar,
   checkboxSelection,
@@ -100,27 +111,37 @@ export function ResourceTable({
   useEffect(() => () => clearTimeout(commitTimer.current), []);
 
   const hiddenKey = (hiddenFields ?? []).join(',');
-  const visibilityFromHidden = () => Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
-  // A saved model wins over the default-hidden set; without one, visibility
-  // starts from (and resets with) the defaults.
+  // Visibility and sort are driven straight from the prefs store (keyed by
+  // tableId), so instance reuse across tables resolves the right model and
+  // external writes — a saved-view restore — apply to a mounted table
+  // immediately. A saved model wins per field, but default-hidden columns it
+  // has never seen (added after the model was saved) stay hidden. Tables
+  // without a tableId fall back to local state.
   const storedVisibility = useUiPrefsStore((s) => (tableId ? s.columnVisibility[tableId] : undefined));
   const setStoredVisibility = useUiPrefsStore((s) => s.setColumnVisibility);
-  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(() => storedVisibility ?? visibilityFromHidden());
-  // Re-seed visibility when this instance is reused for another table (same
-  // route, different kind — tableId changes) or when the default-hidden set
-  // changes, without paying an extra effect-driven render pass.
-  const visibilityKey = `${tableId ?? ''}|${hiddenKey}`;
-  const [prevVisibilityKey, setPrevVisibilityKey] = useState(visibilityKey);
-  if (prevVisibilityKey !== visibilityKey) {
-    setPrevVisibilityKey(visibilityKey);
-    setVisibility(storedVisibility ?? visibilityFromHidden());
-  }
+  const [localVisibility, setLocalVisibility] = useState<GridColumnVisibilityModel | undefined>(undefined);
+  const visibility = useMemo<GridColumnVisibilityModel>(() => {
+    const defaults: GridColumnVisibilityModel = Object.fromEntries(hiddenKey ? hiddenKey.split(',').map((f) => [f, false]) : []);
+    const saved = tableId ? storedVisibility : localVisibility;
+    return saved ? { ...defaults, ...saved } : defaults;
+  }, [tableId, storedVisibility, localVisibility, hiddenKey]);
   const handleVisibilityChange = useCallback(
     (model: GridColumnVisibilityModel) => {
-      setVisibility(model);
       if (tableId) setStoredVisibility(tableId, model);
+      else setLocalVisibility(model);
     },
     [tableId, setStoredVisibility],
+  );
+  const storedSort = useUiPrefsStore((s) => (tableId ? s.sortModels[tableId] : undefined));
+  const setStoredSort = useUiPrefsStore((s) => s.setSortModel);
+  const [localSort, setLocalSort] = useState<GridSortModel | undefined>(undefined);
+  const sortModel = (tableId ? storedSort : localSort) ?? DEFAULT_SORT;
+  const handleSortChange = useCallback(
+    (model: GridSortModel) => {
+      if (tableId) setStoredSort(tableId, model);
+      else setLocalSort(model);
+    },
+    [tableId, setStoredSort],
   );
   const tableDensity = useUiPrefsStore((s) => s.tableDensity);
   // Retrieve this table's saved column widths (if any)
@@ -175,8 +196,30 @@ export function ResourceTable({
   }, [rows, parsedFilter, kind, metricsForFilter]);
 
   const rowsById = useMemo(() => new Map(filtered.map((row) => [row.obj.metadata.uid, row])), [filtered]);
-  const labelOptions = useMemo(() => labelSelectorOptions(rows), [rows]);
+  // Scanning and sorting every row's labels is only worth doing while the
+  // dropdown is open — not on every watch flush of a large list.
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const labelOptions = useMemo(() => (labelsOpen ? labelSelectorOptions(rows) : EMPTY_LABEL_OPTIONS), [labelsOpen, rows]);
   const labelTerms = useMemo(() => splitLabelSelector(labelSelector ?? ''), [labelSelector]);
+
+  // The grid re-renders on every watch flush; keep the sx object stable so
+  // emotion doesn't re-serialize it each time.
+  const gridSx = useMemo(
+    () => ({
+      border: 0,
+      flex: 1,
+      minHeight: 0,
+      '& .MuiDataGrid-row': { cursor: onRowClick ? 'pointer' : 'default' },
+      '& .MuiDataGrid-row.kubus-active-resource-row': {
+        bgcolor: 'action.selected',
+        '&:hover': { bgcolor: 'action.selected' },
+      },
+      '& .MuiDataGrid-row.kubus-muted-row': { opacity: 0.55, transition: 'opacity 120ms' },
+      '& .MuiDataGrid-row.kubus-muted-row:hover, & .MuiDataGrid-row.kubus-muted-row:focus-within': { opacity: 1 },
+      ...copyCellGridSx,
+    }),
+    [!!onRowClick], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const setTextFilter = (value: string) => {
     setInputValue(value);
@@ -188,35 +231,36 @@ export function ResourceTable({
     }, 250);
   };
 
-  const focusSearch = useCallback(() => {
-    requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.select();
-    });
-  }, []);
+  useQuickSearchShortcut(searchInputRef);
 
-  // Tables in hidden tab panes stay mounted; only the visible one may own the
-  // global find/quick-search shortcuts (N listeners would also race focus).
-  const paneActive = usePaneActive();
-  useEffect(() => {
-    if (!paneActive) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isTextEntryTarget(event.target)) return;
-      const key = event.key.toLowerCase();
-      const shortcutModifier = event.ctrlKey || event.metaKey;
-      const isFindShortcut = shortcutModifier && !event.altKey && !event.shiftKey && key === 'f';
-      const isQuickSearchShortcut = !shortcutModifier && !event.altKey && (key === 's' || key === ':' || key === '/');
-      if (!isFindShortcut && !isQuickSearchShortcut) return;
-      event.preventDefault();
-      event.stopPropagation();
-      focusSearch();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [focusSearch, paneActive]);
+  // Friendlier stand-in for the DataGrid's bare "No rows", telling apart an
+  // empty scope from filters hiding everything. A label selector filters
+  // server-side — the excluded objects never reach `rows`, so it gets a
+  // no-matches message without a hidden count.
+  const filteredOut = rows.length - filtered.length;
+  const labelFiltered = labelTerms.length > 0;
+  const NoRowsOverlay = useCallback(
+    () => (
+      <Stack sx={{ height: '100%', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
+        <InboxOutlinedIcon sx={{ fontSize: 34, color: 'text.secondary', opacity: 0.55 }} />
+        <Typography variant="body2" color="text.secondary">
+          {filteredOut > 0
+            ? `No matches — ${countLabel(filteredOut, 'item')} hidden by the current filters`
+            : labelFiltered
+              ? 'No matches for the current label selector'
+              : // `kind` falls back to the literal 'Resource' for plain custom
+                // resources — that would read "No Resource resources".
+                kind && kind !== 'Resource'
+                ? `No ${kind} resources in the current scope`
+                : 'No resources in the current scope'}
+        </Typography>
+      </Stack>
+    ),
+    [filteredOut, labelFiltered, kind],
+  );
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <Box className="kubus-table" sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Stack direction="row" spacing={1} useFlexGap sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
         <SmartFilterInput
           value={inputValue}
@@ -233,6 +277,8 @@ export function ResourceTable({
             limitTags={2}
             options={labelOptions.terms}
             value={labelTerms}
+            onOpen={() => setLabelsOpen(true)}
+            onClose={() => setLabelsOpen(false)}
             filterOptions={labelFilterOptions}
             onChange={(_event, values) => onLabelSelectorChange(joinLabelSelector(values))}
             renderOption={({ key, ...props }, option, { selected }) => (
@@ -258,9 +304,9 @@ export function ResourceTable({
             sx={{ width: 320 }}
           />
         )}
-        <Chip label={`${filtered.length} items`} variant="outlined" />
+        <Chip label={countLabel(filtered.length, 'item')} variant="outlined" />
         {statusText && (
-          <Typography variant="caption" color="warning.main">
+          <Typography variant="caption" sx={{ color: statusTextColor('warning') }}>
             {statusText}
           </Typography>
         )}
@@ -272,19 +318,36 @@ export function ResourceTable({
         columns={gridColumns}
         loading={loading}
         getRowId={(r) => r.obj.metadata.uid}
-        getRowClassName={(params) => (params.id === activeRowId ? 'kubus-active-resource-row' : '')}
+        getRowClassName={(params) => {
+          const classes: string[] = [];
+          if (params.id === activeRowId) classes.push('kubus-active-resource-row');
+          // Finished pods stay listed (and filterable) but recede visually so
+          // the running set stands out; hover restores full contrast.
+          if (kind === 'Pod') {
+            const status = podSummary(params.row.obj).status;
+            if (status === 'Succeeded' || status === 'Completed') classes.push('kubus-muted-row');
+          }
+          return classes.join(' ');
+        }}
         density={tableDensity === 'comfortable' ? 'standard' : 'compact'}
         // On overlay-scrollbar platforms the grid measures the native
         // scrollbar as 0px and floats its own on top of the last column;
         // an explicit size (matching the themed 10px scrollbars) makes it
         // reserve a real gutter instead.
-        scrollbarSize={10}
+        scrollbarSize={layout.scrollbarSize}
         checkboxSelection={checkboxSelection}
+        slots={{ noRowsOverlay: NoRowsOverlay }}
         onRowSelectionModelChange={
           onSelectionChange
             ? (model) => {
+                // The header "select all" checkbox reports an exclude-type
+                // model whose ids are the deselected rows.
                 const ids = model.ids instanceof Set ? model.ids : new Set();
-                onSelectionChange(filtered.filter((r) => ids.has(r.obj.metadata.uid)));
+                const selected =
+                  model.type === 'exclude'
+                    ? filtered.filter((r) => !ids.has(r.obj.metadata.uid))
+                    : filtered.filter((r) => ids.has(r.obj.metadata.uid));
+                onSelectionChange(selected);
               }
             : undefined
         }
@@ -308,20 +371,24 @@ export function ResourceTable({
         columnVisibilityModel={visibility}
         onColumnVisibilityModelChange={handleVisibilityChange}
         onColumnWidthChange={tableId ? (params) => setColumnWidth(tableId, params.colDef.field, params.width) : undefined}
-        onCellKeyDown={handleCopyCellKeyDown}
-        initialState={{ sorting: { sortModel: [{ field: 'name', sort: 'asc' }] } }}
-        sx={{
-          border: 0,
-          flex: 1,
-          minHeight: 0,
-          '& .MuiDataGrid-row': { cursor: onRowClick ? 'pointer' : 'default' },
-          '& .MuiDataGrid-row.kubus-active-resource-row': {
-            bgcolor: 'action.selected',
-            '&:hover': { bgcolor: 'action.selected' },
-          },
-          '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
-          ...copyCellGridSx,
+        onCellKeyDown={(params, event, details) => {
+          handleCopyCellKeyDown(params, event, details);
+          const row = rowsById.get(String(params.id));
+          if (!row) return;
+          // Keyboard equivalents of clicking and right-clicking a row.
+          if (event.key === 'Enter' && (onRowActivate || onRowClick)) {
+            event.preventDefault();
+            (onRowActivate ?? onRowClick)!(row);
+          } else if (onRowContextMenu && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+            event.preventDefault();
+            const cell = (event.target as HTMLElement | null)?.closest?.('.MuiDataGrid-cell');
+            const rect = (cell ?? (event.target as HTMLElement)).getBoundingClientRect();
+            onRowContextMenu(row, { clientX: rect.left + 8, clientY: rect.bottom - 4 });
+          }
         }}
+        sortModel={sortModel}
+        onSortModelChange={handleSortChange}
+        sx={gridSx}
       />
     </Box>
   );

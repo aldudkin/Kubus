@@ -1,6 +1,6 @@
 {
   "name": "kubus",
-  "version": "0.5.1",
+  "version": "0.6.2",
   "private": true,
   "description": "Free, open-source Kubernetes GUI — multi-cluster browsing, logs, exec, port-forward, metrics, Helm",
   "license": "MIT",
@@ -10,9 +10,10 @@
   "scripts": {
     "dev": "pnpm -r --parallel --stream dev",
     "build": "pnpm -r build",
+    "build:helm-engine": "node helm-engine/build.mjs",
     "start": "node server/dist/index.js",
-    "electron": "pnpm build && pnpm --filter @kubus/electron start",
-    "dist": "pnpm build && pnpm --filter @kubus/electron dist",
+    "electron": "pnpm build && pnpm build:helm-engine && pnpm --filter @kubus/electron start",
+    "dist": "pnpm build && pnpm build:helm-engine && pnpm --filter @kubus/electron dist",
     "typecheck": "pnpm -r typecheck",
     "smoke": "node hack/smoke-server.mjs",
     "lint": "oxlint . --deny-warnings",
@@ -21,9 +22,9 @@
     "build-docs": "uvx --native-tls zensical build --clean"
   },
   "devDependencies": {
-    "oxlint": "^1.73.0",
-    "oxlint-tsgolint": "^0.24.0",
+    "oxlint": "^1.74.0",
+    "oxlint-tsgolint": "^0.25.0",
     "playwright-core": "^1.61.1",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }

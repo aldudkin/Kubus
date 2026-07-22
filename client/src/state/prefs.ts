@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { usePaneActive } from '../layout/pane-context.js';
 import { kubusStateStorage } from './persist-storage.js';
 
 export type TableDensity = 'compact' | 'comfortable';
@@ -21,13 +22,38 @@ interface UiPrefsState {
   defaultShell: string;
   /** Treat contexts without an explicit protected flag as protected. */
   protectByDefault: boolean;
+  /** Nav rail collapsed to reclaim width (wide viewports only). */
+  navCollapsed: boolean;
+  /** CronJob schedule columns show human-readable text instead of the cron expression. */
+  cronHumanSchedule: boolean;
+  /** Overview "high usage" pod panel: usage ≥ this % of the limit. */
+  highUsagePct: number;
+  /** Overview "under-requested" pod panel: usage ≥ this multiple of the request. */
+  underRequestedFactor: number;
   /** User-resized column widths, keyed by table id then column field. */
   columnWidths: Record<string, Record<string, number>>;
   /** User-toggled column visibility models, keyed by table id then column field. */
   columnVisibility: Record<string, Record<string, boolean>>;
+  /** User-chosen sort, keyed by table id. */
+  sortModels: Record<string, TableSortModel>;
   set: (patch: Partial<Omit<UiPrefsState, 'set'>>) => void;
   setColumnWidth: (tableId: string, field: string, width: number) => void;
   setColumnVisibility: (tableId: string, model: Record<string, boolean>) => void;
+  setSortModel: (tableId: string, model: TableSortModel) => void;
+  /** Replace a table with a saved snapshot; absent parts restore implicit defaults. */
+  applyTableState: (
+    tableId: string,
+    state: { columnWidths?: Record<string, number>; columnVisibility?: Record<string, boolean>; sort?: TableSortModel },
+  ) => void;
+}
+
+export type TableSortModel = ReadonlyArray<{ field: string; sort: 'asc' | 'desc' | null | undefined }>;
+
+function replaceTableValue<T>(values: Record<string, T>, tableId: string, value: T | undefined): Record<string, T> {
+  const next = { ...values };
+  if (value === undefined) delete next[tableId];
+  else next[tableId] = value;
+  return next;
 }
 
 export const useUiPrefsStore = create<UiPrefsState>()(
@@ -39,8 +65,13 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       defaultTailLines: 500,
       defaultShell: 'auto',
       protectByDefault: false,
+      navCollapsed: false,
+      cronHumanSchedule: false,
+      highUsagePct: 80,
+      underRequestedFactor: 2,
       columnWidths: {},
       columnVisibility: {},
+      sortModels: {},
       set: (patch) => set(patch),
       setColumnWidth: (tableId, field, width) =>
         set((state) => ({
@@ -49,6 +80,16 @@ export const useUiPrefsStore = create<UiPrefsState>()(
       setColumnVisibility: (tableId, model) =>
         set((state) => ({
           columnVisibility: { ...state.columnVisibility, [tableId]: model },
+        })),
+      setSortModel: (tableId, model) =>
+        set((state) => ({
+          sortModels: { ...state.sortModels, [tableId]: model },
+        })),
+      applyTableState: (tableId, state) =>
+        set((s) => ({
+          columnWidths: replaceTableValue(s.columnWidths, tableId, state.columnWidths),
+          columnVisibility: replaceTableValue(s.columnVisibility, tableId, state.columnVisibility),
+          sortModels: replaceTableValue(s.sortModels, tableId, state.sort),
         })),
     }),
     { name: 'kubus-prefs', version: 0, storage: createJSONStorage(() => kubusStateStorage) },
@@ -60,9 +101,16 @@ export const useUiPrefsStore = create<UiPrefsState>()(
  * A stable per-mount ±10% jitter decorrelates the timers of components that
  * poll with the same base (e.g. one overview section per cluster), so many
  * clusters don't fire synchronized request bursts.
+ *
+ * Polling pauses while the enclosing tab pane is hidden — pages stay mounted
+ * in inactive panes, and without this every open tab keeps its full request
+ * loop running. On reveal the poll resumes on its normal cadence (watches keep
+ * lists current; polled extras catch up within one interval).
  */
 export function useRefetchInterval(base: number): number | false {
   const rate = useUiPrefsStore((s) => s.refreshRate);
+  const paneActive = usePaneActive();
   const [jitter] = useState(() => 0.9 + Math.random() * 0.2);
-  return rate === 'off' ? false : Math.round(base * REFRESH_FACTOR[rate] * jitter);
+  if (!paneActive || rate === 'off') return false;
+  return Math.round(base * REFRESH_FACTOR[rate] * jitter);
 }

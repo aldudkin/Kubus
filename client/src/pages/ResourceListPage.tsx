@@ -1,4 +1,5 @@
 import { Activity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { layout } from '../theme.js';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -12,12 +13,15 @@ import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/Add';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SubjectIcon from '@mui/icons-material/Subject';
 import BookmarkAddOutlinedIcon from '@mui/icons-material/BookmarkAddOutlined';
 import { useParams, useSearchParams } from 'react-router';
 import { columnsForKind, groupFromPath, groupToPath, gvkForResource, gvkLabel, pluralLabel, type ResourceKindInfo } from '@kubus/shared';
-import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDryRunResource, useFilteredList, useResourceMetrics, useWatchedList, type ClusterRow } from '../api/queries.js';
+import { useApiResourcesForContexts, useCrdColumns, useCreateResource, useDeleteResource, useDryRunResource, useFilteredList, useResourceMetrics, useRolloutRestart, useWatchedList, type ClusterRow } from '../api/queries.js';
 import { useClustersStore } from '../state/clusters.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { ResourceTable } from '../components/ResourceTable.js';
 import { ApiResourceDrawer } from '../components/ApiResourceDrawer.js';
@@ -26,10 +30,20 @@ import { ResourceDetailPanel, type ResourceSelection } from '../components/Resou
 import { clampDetailWidth, DEFAULT_DETAIL_WIDTH, useDetailStore } from '../state/detail.js';
 import { isLogTargetKind, RowActionMenu, RowActions, RowLogsButton, type RowActionTarget } from '../components/RowActions.js';
 import { YamlEditor } from '../components/YamlEditor.js';
+import { BatchCreateDialog } from '../components/BatchCreateDialog.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { NoClustersState } from '../components/NoClustersState.js';
+import { showToast } from '../state/toast.js';
 import { useNavigationStore } from '../state/navigation.js';
 import { usePaneActive } from '../layout/pane-context.js';
+import { isTextEntryTarget } from '../text-entry.js';
 import { addLabelTerm } from '../label-selector.js';
+import { podContainerNames } from '../kube-display.js';
+
+// Wide, rarely-needed builtin columns start hidden; the column menu re-enables
+// them. Labels carry no signal on CRDs, so the Kind/Group/Scope columns take
+// their place there.
+const BUILTIN_HIDDEN_FIELDS: Record<string, string[]> = { Node: ['nodeProviderID'], CustomResourceDefinition: ['labels'] };
 
 /**
  * Renderless bridge between this page's URL params and the shared detail
@@ -56,7 +70,7 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
   // and enforces this tab's selection (open its ?sel, or close a leftover).
   useEffect(() => {
     if (!paneActive) return;
-    if (sel) openDetail(sel);
+    if (sel) openDetail(sel, { embedded: true });
     else closeDetail();
   }, [paneActive, sel, openDetail, closeDetail]);
 
@@ -70,6 +84,26 @@ function DetailUrlSync({ sel }: { sel: ResourceSelection | undefined }) {
     },
     [closeDetail],
   );
+  return null;
+}
+
+/**
+ * Renderless `c` shortcut: create a resource on the visible list page. Kept
+ * out of ResourceListPage so pane-activation flips re-render this stub only.
+ */
+function CreateShortcut({ onCreate }: { onCreate: () => void }) {
+  const paneActive = usePaneActive();
+  useEffect(() => {
+    if (!paneActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.key.toLowerCase() !== 'c' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (isTextEntryTarget(e.target)) return;
+      e.preventDefault();
+      onCreate();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paneActive, onCreate]);
   return null;
 }
 
@@ -91,8 +125,14 @@ function EmbeddedResourceDetail() {
   const setCollapsed = useDetailStore((s) => s.setCollapsed);
   const width = useDetailStore((s) => s.width);
   const setWidth = useDetailStore((s) => s.setWidth);
+  const focusSeq = useDetailStore((s) => s.focusSeq);
   const [searchParams, setSearchParams] = useSearchParams();
   const asideRef = useRef<HTMLElement>(null);
+
+  // Keyboard row activation asks for focus here; Escape hands it back.
+  useEffect(() => {
+    if (focusSeq && paneActive) asideRef.current?.focus({ preventScroll: true });
+  }, [focusSeq, paneActive]);
 
   // Drag writes the width straight to the DOM; once the mouseup commit
   // re-renders with the same value, drop the inline override so sx takes
@@ -152,6 +192,24 @@ function EmbeddedResourceDetail() {
         component="aside"
         ref={asideRef}
         aria-label="Resource details"
+        tabIndex={-1}
+        onKeyDown={(e) => {
+          // Escape closes the panel and hands focus back to the grid — but
+          // never while typing (inputs, Monaco), where Escape has meaning.
+          if (e.key !== 'Escape' || isTextEntryTarget(e.target)) return;
+          e.stopPropagation();
+          const page = asideRef.current?.closest('.kubus-resource-page');
+          handleClose();
+          // Query after the close re-renders — the grid re-lays-out without
+          // the panel and may recreate cell nodes. Prefer the cell the grid
+          // last had focused, fall back to the first cell.
+          requestAnimationFrame(() => {
+            const cell =
+              page?.querySelector<HTMLElement>('.MuiDataGrid-cell[tabindex="0"], .MuiDataGrid-columnHeader[tabindex="0"]') ??
+              page?.querySelector<HTMLElement>('.MuiDataGrid-cell');
+            cell?.focus();
+          });
+        }}
         sx={{
           position: 'relative',
           flexShrink: 0,
@@ -162,6 +220,7 @@ function EmbeddedResourceDetail() {
           bgcolor: 'background.paper',
           borderLeft: 1,
           borderColor: 'divider',
+          outline: 'none',
         }}
       >
         {!collapsed && (
@@ -178,7 +237,7 @@ function EmbeddedResourceDetail() {
               bottom: 0,
               width: 8,
               cursor: 'col-resize',
-              zIndex: 71,
+              zIndex: layout.zDetailResizeHandle,
               '&:hover .drag-line, &:active .drag-line': { opacity: 1 },
             }}
           >
@@ -208,7 +267,7 @@ function EmbeddedResourceDetail() {
               left: collapsed ? 'auto' : 0,
               right: collapsed ? 0 : 'auto',
               transform: collapsed ? 'translateY(-50%)' : 'translate(-50%, -50%)',
-              zIndex: 72,
+              zIndex: layout.zDetailCollapseButton,
               width: 20,
               height: 52,
               borderRadius: '10px',
@@ -272,6 +331,10 @@ export function ResourceListPage() {
   const nodeAllocation = useMemo(() => (behaviorKind === 'Node' ? makeNodeAllocationLookup(auxPods.rows) : undefined), [behaviorKind, auxPods.rows]);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const openCreate = useCallback(() => setCreateOpen(true), []);
+  // Batch kinds get the guided form-based create dialog instead of the raw YAML stub.
+  const isBatchCreate = group === 'batch' && (kind === 'Job' || kind === 'CronJob');
+  const nsFilter = useClustersStore((s) => s.namespaces);
   const [apiResourceOpen, setApiResourceOpen] = useState(false);
   const [selectedRows, setSelectedRows] = useState<ClusterRow[]>([]);
   const [contextAction, setContextAction] = useState<{ target: RowActionTarget; mouseX: number; mouseY: number } | null>(null);
@@ -280,6 +343,35 @@ export function ResourceListPage() {
   const create = useCreateResource();
   const dryRun = useDryRunResource();
   const addSavedView = useNavigationStore((s) => s.addSavedView);
+  const del = useDeleteResource();
+  const rolloutRestart = useRolloutRestart();
+  const [bulkDialog, setBulkDialog] = useState<'delete' | 'restart' | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const contextSettings = useClustersStore((s) => s.contextSettings);
+  const protectByDefault = useUiPrefsStore((s) => s.protectByDefault);
+  // This page instance is reused across kinds — a selection must not survive
+  // the switch to a different resource list.
+  useEffect(() => setSelectedRows([]), [group, version, plural]);
+
+  const bulkRestartable = kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet';
+  const bulkProtected = selectedRows.some((r) => contextSettings[r.ctx]?.protected ?? protectByDefault);
+  const runBulk = async (verb: string, run: (row: ClusterRow) => Promise<unknown>) => {
+    const rows = selectedRows;
+    setBulkBusy(true);
+    const results = await Promise.allSettled(rows.map((row) => run(row)));
+    setBulkBusy(false);
+    setBulkDialog(null);
+    const failures = results
+      .map((result, i) => ({ result, row: rows[i]! }))
+      .filter((f): f is { result: PromiseRejectedResult; row: ClusterRow } => f.result.status === 'rejected');
+    if (!failures.length) {
+      showToast('success', `${verb} ${rows.length} ${rows.length === 1 ? kind : resourceTitle}`);
+    } else {
+      const first = failures[0]!;
+      const message = first.result.reason instanceof Error ? first.result.reason.message : String(first.result.reason);
+      showToast('error', `${verb} failed for ${failures.length} of ${rows.length} — ${first.row.obj.metadata.name}: ${message}`);
+    }
+  };
 
   // Detail selection deep-linked via ?sel=ctx|namespace|name
   const sel: ResourceSelection | undefined = useMemo(() => {
@@ -331,6 +423,7 @@ export function ResourceListPage() {
   const pushDetail = useDetailStore((s) => s.push);
   const openDetail = useDetailStore((s) => s.open);
   const setDetailCollapsed = useDetailStore((s) => s.setCollapsed);
+  const requestDetailFocus = useDetailStore((s) => s.requestFocus);
   const crdSelection: ResourceSelection | undefined =
     isCustomKind && resourceCtx && group
       ? {
@@ -416,7 +509,10 @@ export function ResourceListPage() {
     }
     return merged;
   }, [staticColumns, metricColumns, columnIds]);
-  const hiddenFields = useMemo(() => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : []), [isCustomKind, printerCols]);
+  const hiddenFields = useMemo(
+    () => (isCustomKind && printerCols?.length ? crdHiddenFields(printerCols) : (BUILTIN_HIDDEN_FIELDS[behaviorKind ?? ''] ?? [])),
+    [isCustomKind, printerCols, behaviorKind],
+  );
 
   const discoveryMissing = useMemo(() => {
     if (!apiResources) return [];
@@ -429,6 +525,7 @@ export function ResourceListPage() {
   const unavailableContexts = new Set(unavailable.map(([ctx]) => ctx));
   const discoveryOnlyMissing = discoveryMissing.filter((ctx) => !unavailableContexts.has(ctx));
   const errors = Object.entries(list.status).filter(([, s]) => s.state === 'error');
+  const reconnecting = Object.entries(list.status).filter(([, s]) => s.state === 'reconnecting');
   const activeRowId = useMemo(() => {
     if (!sel) return undefined;
     return list.rows.find(
@@ -443,23 +540,48 @@ export function ResourceListPage() {
   const multiLogs = kind === 'Pod' && selectedRows.length > 0;
   const kindPath = `/r/${groupToPath(group)}/${version}/${plural}`;
 
+  const openRow = (row: ClusterRow) => {
+    // Update immediately so the embedded panel responds in the same render
+    // cycle; the URL remains the deep-link source of truth. Picking a row is
+    // an explicit ask for details, so also undo a collapse.
+    openDetail(
+      { ctx: row.ctx, group, version, plural, kind, name: row.obj.metadata.name, namespace: row.obj.metadata.namespace, custom: isCustomKind },
+      { embedded: true },
+    );
+    setDetailCollapsed(false);
+    const next = new URLSearchParams(searchParams);
+    next.delete('field');
+    next.set('sel', `${row.ctx}|${row.obj.metadata.namespace ?? ''}|${row.obj.metadata.name}`);
+    setSearchParams(next);
+  };
+
   const saveCurrentView = () => {
     const params = new URLSearchParams();
     if (textFilter.trim()) params.set('q', textFilter.trim());
     if (labelSelector.trim()) params.set('label', labelSelector.trim());
     const path = `${kindPath}${params.toString() ? `?${params.toString()}` : ''}`;
+    // Snapshot the grid so restoring brings back the exact table, not just
+    // the query. tableId for this grid is kindPath.
+    const prefs = useUiPrefsStore.getState();
     addSavedView({
       id: `view:${path}`,
       title: `${resourceTitle}${textFilter || labelSelector ? ' view' : ''}`,
       path,
       textFilter: textFilter.trim() || undefined,
       labelSelector: labelSelector.trim() || undefined,
+      grid: {
+        namespaces: [...useClustersStore.getState().namespaces],
+        sort: prefs.sortModels[kindPath],
+        columnVisibility: prefs.columnVisibility[kindPath],
+        columnWidths: prefs.columnWidths[kindPath],
+      },
     });
   };
 
   return (
-    <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <Box className="kubus-resource-page" sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <DetailUrlSync sel={sel} />
+      <CreateShortcut onCreate={openCreate} />
       <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
@@ -480,6 +602,11 @@ export function ResourceListPage() {
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
             {ctx}: {s.message ?? 'watch error'}
+          </Alert>
+        ))}
+        {reconnecting.map(([ctx]) => (
+          <Alert key={ctx} severity="warning" sx={{ mt: 0.5 }}>
+            {ctx}: connection lost — reconnecting, the list may be stale.
           </Alert>
         ))}
         {unavailable.map(([ctx, s]) => (
@@ -509,24 +636,19 @@ export function ResourceListPage() {
         labelSelector={labelSelector}
         onFilterChange={(value) => setQueryParam('q', value)}
         onLabelSelectorChange={(value) => setQueryParam('label', value)}
-        onRowClick={(row) => {
-          // Update immediately so the embedded panel responds in the same
-          // render cycle; the URL remains the deep-link source of truth.
-          // Picking a row is an explicit ask for details, so also undo a
-          // collapse.
-          openDetail({ ctx: row.ctx, group, version, plural, kind, name: row.obj.metadata.name, namespace: row.obj.metadata.namespace, custom: isCustomKind });
-          setDetailCollapsed(false);
-          const next = new URLSearchParams(searchParams);
-          next.delete('field');
-          next.set('sel', `${row.ctx}|${row.obj.metadata.namespace ?? ''}|${row.obj.metadata.name}`);
-          setSearchParams(next);
+        onRowClick={openRow}
+        onRowActivate={(row) => {
+          // Keyboard activation also moves focus into the panel; Escape there
+          // returns it to the grid.
+          openRow(row);
+          requestDetailFocus();
         }}
-        onRowContextMenu={(row, event) => {
-          setContextAction({ target: rowActionTarget(row), mouseX: event.clientX + 2, mouseY: event.clientY - 6 });
+        onRowContextMenu={(row, position) => {
+          setContextAction({ target: rowActionTarget(row), mouseX: position.clientX + 2, mouseY: position.clientY - 6 });
           setContextMenuOpen(true);
         }}
-        checkboxSelection={kind === 'Pod'}
-        onSelectionChange={kind === 'Pod' ? setSelectedRows : undefined}
+        checkboxSelection
+        onSelectionChange={setSelectedRows}
         hiddenFields={hiddenFields}
         activeRowId={activeRowId}
         toolbar={
@@ -554,6 +676,7 @@ export function ResourceListPage() {
                       ctx: ctx!,
                       namespace: namespace ?? '',
                       pods: rows.map((r) => r.obj.metadata.name),
+                      sources: rows.map((r) => ({ pod: r.obj.metadata.name, containers: podContainerNames(r.obj) })),
                       follow: true,
                       tailLines: 500,
                     });
@@ -563,10 +686,62 @@ export function ResourceListPage() {
                 Logs ({selectedRows.length})
               </Button>
             )}
+            {selectedRows.length > 0 && bulkRestartable && (
+              <Button startIcon={<RestartAltIcon />} variant="outlined" onClick={() => setBulkDialog('restart')}>
+                Restart ({selectedRows.length})
+              </Button>
+            )}
+            {selectedRows.length > 0 && (
+              <Button startIcon={<DeleteOutlineIcon />} color="error" variant="outlined" onClick={() => setBulkDialog('delete')}>
+                Delete ({selectedRows.length})
+              </Button>
+            )}
             <Button startIcon={<AddIcon />} variant="outlined" onClick={() => setCreateOpen(true)}>
               Create
             </Button>
           </>
+        }
+      />
+      <ConfirmDialog
+        open={bulkDialog === 'delete'}
+        title={`Delete ${selectedRows.length} ${selectedRows.length === 1 ? kind : resourceTitle}`}
+        message={
+          <>
+            Delete the selected {selectedRows.length === 1 ? kind : `${selectedRows.length} ${resourceTitle}`}? This cannot be undone.
+            <BulkTargetList rows={selectedRows} />
+          </>
+        }
+        confirmLabel="Delete"
+        danger
+        busy={bulkBusy}
+        confirmText={bulkProtected ? `delete ${selectedRows.length}` : undefined}
+        onClose={() => setBulkDialog(null)}
+        onConfirm={() =>
+          void runBulk('Deleted', (row) =>
+            del.mutateAsync({ ctx: row.ctx, group, version, plural, name: row.obj.metadata.name, namespace: row.obj.metadata.namespace }),
+          )
+        }
+      />
+      <ConfirmDialog
+        open={bulkDialog === 'restart'}
+        title={`Restart ${selectedRows.length} ${selectedRows.length === 1 ? kind : resourceTitle}`}
+        message={
+          <>
+            Trigger a rolling restart of the selected {selectedRows.length === 1 ? kind : `${selectedRows.length} ${resourceTitle}`}?
+            <BulkTargetList rows={selectedRows} />
+          </>
+        }
+        confirmLabel="Restart"
+        busy={bulkBusy}
+        confirmText={bulkProtected ? `restart ${selectedRows.length}` : undefined}
+        onClose={() => setBulkDialog(null)}
+        onConfirm={() =>
+          void runBulk('Restarted', (row) =>
+            rolloutRestart.mutateAsync({
+              ctx: row.ctx,
+              body: { kind: kind as 'Deployment', namespace: row.obj.metadata.namespace ?? '', name: row.obj.metadata.name },
+            }),
+          )
         }
       />
       {contextAction && (
@@ -587,28 +762,57 @@ export function ResourceListPage() {
           crdSelection
             ? () => {
                 setApiResourceOpen(false);
-                pushDetail(crdSelection);
+                pushDetail(crdSelection, { embedded: true });
               }
             : undefined
         }
       />
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth slotProps={{ paper: { sx: { height: '80vh' } } }}>
-        <DialogTitle>Create resource{selected.length > 1 ? ` on ${selected[0]}` : ''}</DialogTitle>
-        <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column' }}>
-          <YamlEditor
-            value={createTemplate(kind, group, version)}
-            applyLabel="Create"
-            schema={selected[0] ? { ctx: selected[0], group, version, kind } : undefined}
-            onApply={async (text) => {
-              await create.mutateAsync({ ctx: selected[0]!, yamlBody: text });
-              setCreateOpen(false);
-            }}
-            onDryRun={(text) => dryRun.mutateAsync({ ctx: selected[0]!, yamlBody: text })}
-          />
-        </DialogContent>
-      </Dialog>
+      {createOpen && isBatchCreate && selected[0] ? (
+        <BatchCreateDialog
+          ctx={selected[0]}
+          kind={kind as 'Job' | 'CronJob'}
+          group={group}
+          version={version}
+          defaultNamespace={nsFilter.length === 1 ? nsFilter[0] : undefined}
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : (
+        <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="md" fullWidth slotProps={{ paper: { sx: { height: '80vh' } } }}>
+          <DialogTitle>Create resource{selected.length > 1 ? ` on ${selected[0]}` : ''}</DialogTitle>
+          <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column' }}>
+            <YamlEditor
+              value={createTemplate(kind, group, version)}
+              applyLabel="Create"
+              applyUnchanged
+              schema={selected[0] ? { ctx: selected[0], group, version, kind } : undefined}
+              onApply={async (text) => {
+                await create.mutateAsync({ ctx: selected[0]!, yamlBody: text });
+                setCreateOpen(false);
+              }}
+              onDryRun={(text) => dryRun.mutateAsync({ ctx: selected[0]!, yamlBody: text })}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
       </Box>
       <EmbeddedResourceDetail />
+    </Box>
+  );
+}
+
+/** Compact cluster/namespace/name listing shown in bulk-action confirms. */
+function BulkTargetList({ rows }: { rows: ClusterRow[] }) {
+  const shown = rows.slice(0, 8);
+  const more = rows.length - shown.length;
+  return (
+    <Box component="ul" sx={{ my: 1, pl: 2.5, fontFamily: 'monospace', fontSize: 12 }}>
+      {shown.map((row) => (
+        <li key={row.obj.metadata.uid}>
+          {row.ctx}: {row.obj.metadata.namespace ? `${row.obj.metadata.namespace}/` : ''}
+          {row.obj.metadata.name}
+        </li>
+      ))}
+      {more > 0 && <li>… and {more} more</li>}
     </Box>
   );
 }

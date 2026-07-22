@@ -1,30 +1,31 @@
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import FormControl from '@mui/material/FormControl';
 import FormControlLabel from '@mui/material/FormControlLabel';
-import InputAdornment from '@mui/material/InputAdornment';
 import InputLabel from '@mui/material/InputLabel';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
-import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import SearchIcon from '@mui/icons-material/Search';
 import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { gvkForKind, type KubeObject } from '@kubus/shared';
 import { useApiResourcesForContexts, useWatchedList, type ClusterRow } from '../api/queries.js';
-import { useClustersStore } from '../state/clusters.js';
+import { matchesPlainText, matchesSmartFilter, parseSmartFilter } from '../smart-filter.js';
+import { namespaceVisible, useClustersStore } from '../state/clusters.js';
 import { useDetailStore } from '../state/detail.js';
 import { AgeCell } from '../components/AgeCell.js';
 import { copyCellGridSx, handleCopyCellKeyDown, withCellCopy } from '../components/CellCopy.js';
 import { useGridPrefs } from '../components/grid-prefs.js';
+import { useQuickSearchShortcut } from '../components/quick-search.js';
+import { SmartFilterInput } from '../components/SmartFilterInput.js';
 import { StatusChip } from '../components/StatusChip.js';
 import { NoClustersState } from '../components/NoClustersState.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { countLabel } from '../components/format.js';
 
 interface EventObj extends KubeObject {
   type?: string;
@@ -46,6 +47,18 @@ interface EventRow {
   firstSeen?: string;
   lastSeen?: string;
 }
+
+// Hoisted: the grid re-renders on every watch tick, and fresh sx/getRowId
+// identities would make it redo emotion serialization and prop-keyed work.
+const eventsGridSx = {
+  border: 0,
+  flex: 1,
+  minHeight: 0,
+  '& .MuiDataGrid-row': { cursor: 'pointer' },
+  ...copyCellGridSx,
+};
+const eventsGridInitialState = { sorting: { sortModel: [{ field: 'lastSeen', sort: 'desc' as const }] } };
+const getEventRowId = (r: EventRow) => r.id;
 
 function maxTime(...ts: Array<string | null | undefined>): string | undefined {
   return ts
@@ -97,6 +110,8 @@ export function EventsPage() {
   const [kindFilter, setKindFilter] = useState('');
   const [text, setText] = useState('');
   const deferredText = useDeferredValue(text);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useQuickSearchShortcut(searchInputRef);
 
   const kinds = useMemo(() => {
     const set = new Set<string>();
@@ -107,54 +122,76 @@ export function EventsPage() {
     return [...set].sort();
   }, [list.rows]);
 
+  // Same engine as the resource tables: plain words, or `/` clauses
+  // (reason:, message:, type:warning, ns:, cluster:, age>…).
+  const parsedFilter = useMemo(() => {
+    const query = deferredText.trim();
+    if (!query) return undefined;
+    if (query.startsWith('/')) {
+      const clauses = parseSmartFilter(query.slice(1));
+      return clauses.length ? { clauses } : undefined;
+    }
+    return { words: query.toLowerCase().split(/\s+/).filter(Boolean) };
+  }, [deferredText]);
+
   const deduped = useMemo(() => {
     let filtered = list.rows;
     if (namespaces.length > 0) {
-      const nsSet = new Set(namespaces);
-      filtered = filtered.filter((r) => !r.obj.metadata.namespace || nsSet.has(r.obj.metadata.namespace));
+      filtered = filtered.filter((r) => namespaceVisible(r.obj.metadata.namespace, namespaces));
+    }
+    if (parsedFilter?.clauses) {
+      const ctx = { kind: 'Event', nowMs: Date.now() };
+      filtered = filtered.filter((r) => matchesSmartFilter(r, parsedFilter.clauses, ctx));
+    } else if (parsedFilter?.words) {
+      filtered = filtered.filter((r) => matchesPlainText(r, parsedFilter.words, 'Event'));
     }
     return dedupe(filtered);
-  }, [list.rows, namespaces]);
+  }, [list.rows, namespaces, parsedFilter]);
 
   const rows = useMemo(() => {
-    const f = deferredText.trim().toLowerCase();
-    if (!warningsOnly && !kindFilter && !f) return deduped;
+    if (!warningsOnly && !kindFilter) return deduped;
     return deduped.filter((r) => {
       if (warningsOnly && r.ev.type !== 'Warning') return false;
       if (kindFilter && r.ev.involvedObject?.kind !== kindFilter) return false;
-      if (f) {
-        const o = r.ev.involvedObject;
-        return (
-          (r.ev.message ?? '').toLowerCase().includes(f) ||
-          (r.ev.reason ?? '').toLowerCase().includes(f) ||
-          `${o?.kind}/${o?.name}`.toLowerCase().includes(f) ||
-          (o?.namespace ?? '').toLowerCase().includes(f) ||
-          r.ctx.toLowerCase().includes(f)
-        );
-      }
       return true;
     });
-  }, [deduped, warningsOnly, kindFilter, deferredText]);
+  }, [deduped, warningsOnly, kindFilter]);
 
-  const openInvolved = (row: EventRow) => {
-    const o = row.ev.involvedObject;
-    if (!o?.kind || !o.name) return;
-    // Resolve the GVR from discovery (covers CRDs), falling back to builtins.
-    const apiVersion = o.apiVersion ?? '';
-    const [group, version] = apiVersion.includes('/') ? apiVersion.split('/') : ['', apiVersion || 'v1'];
-    const fromDiscovery = (apiResources?.byContext[row.ctx] ?? []).find((r) => r.kind === o.kind && r.group === (group ?? '') && (!version || r.version === version));
-    const gvk = fromDiscovery ?? gvkForKind(o.kind);
-    if (!gvk) return;
-    openDetail({
-      ctx: row.ctx,
-      group: gvk.group,
-      version: gvk.version,
-      plural: gvk.plural,
-      kind: o.kind,
-      name: o.name,
-      namespace: o.namespace,
-    });
-  };
+  const openInvolved = useCallback(
+    (row: EventRow) => {
+      const o = row.ev.involvedObject;
+      if (!o?.kind || !o.name) return;
+      // Resolve the GVR from discovery (covers CRDs), falling back to builtins.
+      const apiVersion = o.apiVersion ?? '';
+      const [group, version] = apiVersion.includes('/') ? apiVersion.split('/') : ['', apiVersion || 'v1'];
+      const fromDiscovery = (apiResources?.byContext[row.ctx] ?? []).find((r) => r.kind === o.kind && r.group === (group ?? '') && (!version || r.version === version));
+      const gvk = fromDiscovery ?? gvkForKind(o.kind);
+      if (!gvk) return;
+      openDetail({
+        ctx: row.ctx,
+        group: gvk.group,
+        version: gvk.version,
+        plural: gvk.plural,
+        kind: o.kind,
+        name: o.name,
+        namespace: o.namespace,
+      });
+    },
+    [apiResources, openDetail],
+  );
+
+  const onRowClick = useCallback((p: { row: EventRow }) => openInvolved(p.row), [openInvolved]);
+  const onCellKeyDown = useCallback<NonNullable<React.ComponentProps<typeof DataGrid<EventRow>>['onCellKeyDown']>>(
+    (params, event, details) => {
+      handleCopyCellKeyDown(params, event, details);
+      // Keyboard equivalent of clicking the row.
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        openInvolved(params.row);
+      }
+    },
+    [openInvolved],
+  );
 
   const columns: GridColDef<EventRow>[] = useMemo(() => {
     const defs: GridColDef<EventRow>[] = [
@@ -163,7 +200,7 @@ export function EventsPage() {
         headerName: 'Type',
         width: 90,
         valueGetter: (_v, row) => row.ev.type ?? '',
-        renderCell: (p) => <StatusChip status={p.row.ev.type === 'Warning' ? 'Error' : 'Ready'} />,
+        renderCell: (p) => <StatusChip status={p.row.ev.type ?? ''} />,
       },
       { field: 'reason', headerName: 'Reason', width: 150, valueGetter: (_v, row) => row.ev.reason ?? '' },
       {
@@ -203,35 +240,27 @@ export function EventsPage() {
   }
 
   const errors = Object.entries(list.status).filter(([, s]) => s.state === 'error');
+  const reconnecting = Object.entries(list.status).filter(([, s]) => s.state === 'reconnecting');
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <Box sx={{ px: 1.5, pt: 1.5 }}>
         <PageHeader title="Events" icon={<NotificationsNoneOutlinedIcon />}>
-          <Chip label={`${rows.length} events`} variant="outlined" />
+          <Chip label={countLabel(rows.length, 'event')} variant="outlined" />
         </PageHeader>
         {errors.map(([ctx, s]) => (
           <Alert key={ctx} severity="error" sx={{ mt: 0.5 }}>
             {ctx}: {s.message ?? 'watch error'}
           </Alert>
         ))}
+        {reconnecting.map(([ctx]) => (
+          <Alert key={ctx} severity="warning" sx={{ mt: 0.5 }}>
+            {ctx}: connection lost — reconnecting, events may be stale.
+          </Alert>
+        ))}
       </Box>
       <Stack direction="row" spacing={1} sx={{ px: 1.5, py: 1, flexShrink: 0, alignItems: 'center' }}>
-        <TextField
-          placeholder="Search message, reason, object…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          sx={{ width: 280 }}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon sx={{ fontSize: 18 }} />
-                </InputAdornment>
-              ),
-            },
-          }}
-        />
+        <SmartFilterInput value={text} onChange={setText} kind="Event" rows={list.rows} inputRef={searchInputRef} />
         <FormControl size="small" sx={{ minWidth: 160 }}>
           <InputLabel id="events-kind">Kind</InputLabel>
           <Select labelId="events-kind" label="Kind" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
@@ -252,20 +281,13 @@ export function EventsPage() {
         rows={rows}
         columns={grid.columns}
         loading={Object.values(list.status).some((s) => s.state === 'loading')}
-        getRowId={(r) => r.id}
+        getRowId={getEventRowId}
         density={grid.density}
         onColumnWidthChange={grid.onColumnWidthChange}
-        onRowClick={(p) => openInvolved(p.row as EventRow)}
-        onCellKeyDown={handleCopyCellKeyDown}
-        initialState={{ sorting: { sortModel: [{ field: 'lastSeen', sort: 'desc' }] } }}
-        sx={{
-          border: 0,
-          flex: 1,
-          minHeight: 0,
-          '& .MuiDataGrid-row': { cursor: 'pointer' },
-          '& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus': { outline: 'none' },
-          ...copyCellGridSx,
-        }}
+        onRowClick={onRowClick}
+        onCellKeyDown={onCellKeyDown}
+        initialState={eventsGridInitialState}
+        sx={eventsGridSx}
       />
     </Box>
   );

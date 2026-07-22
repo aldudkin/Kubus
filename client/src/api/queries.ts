@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, queryOptions, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePaneActive } from '../layout/pane-context.js';
 import type {
   ClusterMetricsSummary,
@@ -17,11 +17,17 @@ import type {
   MetricsServerStatus,
   MetricsServerUninstallResult,
   MetricsSnapshot,
+  NamespaceOverview,
+  OperatorRollup,
+  OverviewCertificates,
+  PodResourcesResponse,
   ClusterNetworkSummary,
   NetworkAgentInstallResult,
   NetworkAgentStatus,
   NetworkAgentUninstallResult,
+  LocalPortCheckResponse,
   PortForwardInfo,
+  PortForwardPreflightResponse,
   PortForwardRequest,
   ResourceKindInfo,
   WatchStatusState,
@@ -38,7 +44,6 @@ import type {
   DrainStartedResponse,
   SetImageRequest,
   SuspendCronJobRequest,
-  TriggerCronJobRequest,
   RerunJobRequest,
   RolloutUndoRequest,
   RolloutPauseRequest,
@@ -46,7 +51,22 @@ import type {
   DebugPodRequest,
   DebugPodResponse,
   StopDebugRequest,
-  HelmRollbackResult,
+  HelmRepo,
+  HelmChartSummary,
+  HelmChartVersion,
+  HelmChartDetail,
+  HelmChartHit,
+  HelmChartSourceRef,
+  HelmChartUpdate,
+  HelmUpdateCheck,
+  HelmHubChart,
+  HelmInstallRequest,
+  HelmUpgradeRequest,
+  HelmDryRunResult,
+  HelmOperation,
+  HelmOperationStarted,
+  HelmUninstallResult,
+  AppInfo,
   PrinterColumn,
   AuditReport,
   KubeconfigSettings,
@@ -60,15 +80,22 @@ import type {
 } from '@kubus/shared';
 import { groupToPath } from '@kubus/shared';
 import { apiFetch } from './http.js';
+import { LOCAL_ERROR_HANDLING_META } from './mutation-errors.js';
 import { watchClient } from './ws/watch-client.js';
 import { useClustersStore } from '../state/clusters.js';
 import { useRefetchInterval } from '../state/prefs.js';
+import { showToast } from '../state/toast.js';
 
 // ---- Contexts ----
 
-export function useContexts() {
+/**
+ * Mounted once at the app root: re-fetches the context list on server
+ * kubeconfig broadcasts and refreshes discovery-derived queries when a
+ * cluster's CRD set changes. One shared subscription serves every
+ * useContexts() observer, so the hook itself stays subscription-free.
+ */
+export function useContextsInvalidation() {
   const qc = useQueryClient();
-  // Re-fetch the context list whenever the server reports kubeconfig changes.
   useEffect(
     () =>
       watchClient.onBroadcast((msg) => {
@@ -76,13 +103,31 @@ export function useContexts() {
           void qc.invalidateQueries({ queryKey: ['contexts'] });
           void qc.invalidateQueries({ queryKey: ['kubeconfig-settings'] });
         }
+        // The cluster's CRD set changed (helm install, operator, kubectl …) —
+        // refresh everything derived from API discovery so new kinds appear live.
+        if (msg.op === 'discovery-update') {
+          void qc.invalidateQueries({ queryKey: ['api-resources', msg.ctx] });
+          void qc.invalidateQueries({ queryKey: ['api-resources-multi'] });
+          void qc.invalidateQueries({ queryKey: ['crd-columns'] });
+        }
       }),
     [qc],
   );
+}
+
+/**
+ * The shared context list. The always-mounted cluster picker is the sole
+ * poller; every other observer passes poll: false and rides on the cache —
+ * each polling observer runs its own interval timer, so N observers would
+ * otherwise multiply the refetches. Kubeconfig changes reach non-polling
+ * observers anyway via the contexts-changed broadcast invalidation.
+ */
+export function useContexts({ poll = true }: { poll?: boolean } = {}) {
+  const interval = useRefetchInterval(30_000);
   return useQuery({
     queryKey: ['contexts'],
     queryFn: () => apiFetch<ContextInfo[]>('/api/contexts'),
-    refetchInterval: useRefetchInterval(30_000),
+    refetchInterval: poll ? interval : false,
   });
 }
 
@@ -134,6 +179,7 @@ export function useClusterCa(ctx: string, enabled: boolean) {
 export function useEditCluster() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, body }: { ctx: string; body: EditClusterRequest }) =>
       apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}/cluster`, {
         method: 'PUT',
@@ -151,6 +197,7 @@ export function useEditCluster() {
 export function useDeleteCluster() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: (ctx: string) => apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}`, { method: 'DELETE' }),
     onSuccess: (contexts, ctx) => {
       useClustersStore.getState().removeContext(ctx);
@@ -164,6 +211,7 @@ export function useDeleteCluster() {
 export function useSetSshHost() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, body }: { ctx: string; body: SetSshHostRequest }) =>
       apiFetch<ContextInfo[]>(`/api/contexts/${encodeURIComponent(ctx)}/ssh-host`, {
         method: 'PUT',
@@ -197,6 +245,7 @@ export function useKubeconfigSettings(enabled = true) {
 export function useSetKubeconfig() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: (body: SetKubeconfigRequest) =>
       apiFetch<KubeconfigSettings>('/api/settings/kubeconfig', {
         method: 'PUT',
@@ -213,6 +262,7 @@ export function useSetKubeconfig() {
 export function useImportKubeconfig() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: (body: KubeconfigImportRequest) =>
       apiFetch<KubeconfigImportResponse>('/api/settings/kubeconfig/import', {
         method: 'POST',
@@ -469,11 +519,16 @@ export function resourceUrl(ctx: string, group: string, version: string, plural:
   return `/api/contexts/${encodeURIComponent(ctx)}/resources/${groupToPath(group)}/${version}/${plural}/${encodeURIComponent(name)}${q ? `?${q}` : ''}`;
 }
 
-export function useResource(sel: { ctx: string; group: string; version: string; plural: string; name: string; namespace?: string; reveal?: boolean } | undefined) {
+export function useResource(
+  sel: { ctx: string; group: string; version: string; plural: string; name: string; namespace?: string; reveal?: boolean } | undefined,
+  opts?: { liveMs?: number },
+) {
+  const interval = useRefetchInterval(opts?.liveMs ?? 0);
   return useQuery({
     queryKey: ['resource', sel],
     queryFn: () => apiFetch<KubeObject>(resourceUrl(sel!.ctx, sel!.group, sel!.version, sel!.plural, sel!.name, sel!.namespace, sel!.reveal ? { reveal: 'true' } : undefined)),
     enabled: !!sel,
+    refetchInterval: opts?.liveMs ? interval : false,
   });
 }
 
@@ -575,6 +630,7 @@ export async function resolveLogTargetPods(sel: {
 export function useApplyResource() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, group, version, plural, name, namespace, yamlBody }: { ctx: string; group: string; version: string; plural: string; name: string; namespace?: string; yamlBody: string }) =>
       apiFetch<KubeObject>(resourceUrl(ctx, group, version, plural, name, namespace), {
         method: 'PUT',
@@ -587,6 +643,7 @@ export function useApplyResource() {
 
 export function useCreateResource() {
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, yamlBody }: { ctx: string; yamlBody: string }) =>
       apiFetch<KubeObject>(`/api/contexts/${encodeURIComponent(ctx)}/resources`, {
         method: 'POST',
@@ -598,6 +655,7 @@ export function useCreateResource() {
 
 export function useDryRunResource() {
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, yamlBody }: { ctx: string; yamlBody: string }) =>
       apiFetch<ResourceDryRunResponse>(`/api/contexts/${encodeURIComponent(ctx)}/resources/dry-run`, {
         method: 'POST',
@@ -609,6 +667,7 @@ export function useDryRunResource() {
 
 export function useDeleteResource() {
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, group, version, plural, name, namespace }: { ctx: string; group: string; version: string; plural: string; name: string; namespace?: string }) =>
       apiFetch(resourceUrl(ctx, group, version, plural, name, namespace), { method: 'DELETE' }),
   });
@@ -624,41 +683,39 @@ function actionMutation<T, R = { ok: boolean }>(action: string) {
 }
 
 export function useScale() {
-  return useMutation({ mutationFn: actionMutation<ScaleRequest>('scale') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<ScaleRequest>('scale') });
 }
 export function useRolloutRestart() {
-  return useMutation({ mutationFn: actionMutation<RolloutRestartRequest>('rollout-restart') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<RolloutRestartRequest>('rollout-restart') });
 }
 export function useCordon() {
-  return useMutation({ mutationFn: actionMutation<CordonRequest>('cordon') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<CordonRequest>('cordon') });
 }
 export function useDrain() {
-  return useMutation({ mutationFn: actionMutation<DrainRequest, DrainStartedResponse>('drain') });
-}
-export function useTriggerCronJob() {
-  return useMutation({ mutationFn: actionMutation<TriggerCronJobRequest, { jobName: string }>('trigger-cronjob') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<DrainRequest, DrainStartedResponse>('drain') });
 }
 export function useSuspendCronJob() {
-  return useMutation({ mutationFn: actionMutation<SuspendCronJobRequest>('suspend-cronjob') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<SuspendCronJobRequest>('suspend-cronjob') });
 }
 export function useSetImage() {
-  return useMutation({ mutationFn: actionMutation<SetImageRequest>('set-image') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<SetImageRequest>('set-image') });
 }
 export function useRerunJob() {
-  return useMutation({ mutationFn: actionMutation<RerunJobRequest, { jobName: string }>('rerun-job') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<RerunJobRequest, { jobName: string }>('rerun-job') });
 }
 export function useRolloutUndo() {
-  return useMutation({ mutationFn: actionMutation<RolloutUndoRequest>('rollout-undo') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<RolloutUndoRequest>('rollout-undo') });
 }
 export function useRolloutPause() {
-  return useMutation({ mutationFn: actionMutation<RolloutPauseRequest>('rollout-pause') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<RolloutPauseRequest>('rollout-pause') });
 }
 export function useDebugPod() {
-  return useMutation({ mutationFn: actionMutation<DebugPodRequest, DebugPodResponse>('debug-pod') });
+  return useMutation({ meta: LOCAL_ERROR_HANDLING_META, mutationFn: actionMutation<DebugPodRequest, DebugPodResponse>('debug-pod') });
 }
 export function useStopDebug() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: actionMutation<StopDebugRequest>('stop-debug'),
     // The idle loop notices the stop file within ~1s — refetch after that so
     // the pod object actually shows the container as terminated.
@@ -675,7 +732,7 @@ export function useRolloutHistory(sel: { ctx: string; kind: string; namespace?: 
       const params = new URLSearchParams({ kind: sel!.kind, namespace: sel!.namespace ?? '', name: sel!.name });
       return apiFetch<RolloutRevision[]>(`/api/contexts/${encodeURIComponent(sel!.ctx)}/detail/rollout-history?${params}`);
     },
-    enabled: !!sel && (sel.kind === 'Deployment' || sel.kind === 'StatefulSet'),
+    enabled: !!sel && (sel.kind === 'Deployment' || sel.kind === 'StatefulSet' || sel.kind === 'DaemonSet'),
     refetchInterval: useRefetchInterval(15_000),
   });
 }
@@ -701,23 +758,46 @@ export function useNodeMetrics(ctx: string) {
   });
 }
 
-/** Per-context usage snapshots for the Pod or Node list views. */
+/**
+ * Per-context usage snapshots for the Pod or Node list views. One cache entry
+ * per context (not per context list), so a single-cluster detail view shares
+ * the multi-cluster list page's snapshot instead of starting a second poll
+ * loop for the same data.
+ *
+ * The observer memoizes the combined result on the `combine` identity and the
+ * raw results, so both are kept stable here (callers pass fresh context
+ * arrays every render): an inline combine would rebuild the Map — new `data`
+ * identity — on every render, cascading into rebuilt metric grid columns on
+ * each watch flush.
+ */
 export function useResourceMetrics(contexts: string[], kind: 'pods' | 'nodes') {
-  return useQuery({
-    queryKey: ['metrics-snapshot', kind, contexts],
-    queryFn: async () => {
-      const result = new Map<string, MetricsSnapshot>();
-      await Promise.all(
-        contexts.map(async (ctx) => {
-          const snap = await apiFetch<MetricsSnapshot>(`/api/contexts/${encodeURIComponent(ctx)}/metrics/${kind}`).catch(() => ({ available: false, items: [] }) as MetricsSnapshot);
-          result.set(ctx, snap);
-        }),
-      );
-      return result;
+  const interval = useRefetchInterval(20_000);
+  const contextsKey = contexts.join('\n');
+  const queries = useMemo(
+    () =>
+      (contextsKey ? contextsKey.split('\n') : []).map((ctx) => ({
+        queryKey: ['metrics-snapshot', kind, ctx] as const,
+        queryFn: () =>
+          apiFetch<MetricsSnapshot>(`/api/contexts/${encodeURIComponent(ctx)}/metrics/${kind}`).catch(
+            () => ({ available: false, probed: true, items: [] }) as MetricsSnapshot,
+          ),
+        refetchInterval: interval,
+      })),
+    [contextsKey, kind, interval],
+  );
+  const combine = useCallback(
+    (results: Array<{ data?: MetricsSnapshot }>) => {
+      const ctxs = contextsKey ? contextsKey.split('\n') : [];
+      if (!ctxs.length) return { data: undefined as Map<string, MetricsSnapshot> | undefined };
+      const data = new Map<string, MetricsSnapshot>();
+      results.forEach((result, i) => {
+        if (result.data) data.set(ctxs[i]!, result.data);
+      });
+      return { data };
     },
-    enabled: contexts.length > 0,
-    refetchInterval: useRefetchInterval(20_000),
-  });
+    [contextsKey],
+  );
+  return useQueries({ queries, combine });
 }
 
 export function useMetricsHistory(sel: { ctx: string; kind: 'pod' | 'node'; name: string; namespace?: string } | undefined) {
@@ -744,41 +824,63 @@ export function useMetricsSummary(ctx: string) {
 
 // ---- metrics-server install / uninstall ----
 
-export function useMetricsServerStatus(ctx: string, opts?: { refetchMs?: number }) {
+export function useMetricsServerStatus(ctx: string) {
+  const interval = useRefetchInterval(30_000);
   return useQuery({
     queryKey: ['metrics-server-status', ctx],
     queryFn: () => apiFetch<MetricsServerStatus>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server`),
-    refetchInterval: useRefetchInterval(opts?.refetchMs ?? 30_000),
+    // Install status is near-static; poll fast only while an install is
+    // settling (manifests applied → Deployment ready → metrics flowing).
+    refetchInterval: (query) => {
+      if (interval === false) return false;
+      const s = query.state.data;
+      return s?.installed && (!s.ready || !s.metricsAvailable) ? Math.min(interval, 5_000) : interval;
+    },
     retry: false,
   });
 }
 
-function invalidateMetricsServer(qc: ReturnType<typeof useQueryClient>): void {
-  void qc.invalidateQueries({ queryKey: ['metrics-server-status'] });
-  void qc.invalidateQueries({ queryKey: ['metrics-summary'] });
-  void qc.invalidateQueries({ queryKey: ['metrics-nodes'] });
-  void qc.invalidateQueries({ queryKey: ['metrics-snapshot'] });
+/**
+ * One-shot refetch of metrics queries — also the "refresh now" action, so it
+ * works while polling is paused. Scoped to one cluster when ctx is given so a
+ * per-cluster refresh doesn't fan out to every selected cluster.
+ */
+export function invalidateMetricsServer(qc: ReturnType<typeof useQueryClient>, ctx?: string): void {
+  void qc.invalidateQueries({ queryKey: ctx ? ['metrics-server-status', ctx] : ['metrics-server-status'] });
+  void qc.invalidateQueries({ queryKey: ctx ? ['metrics-summary', ctx] : ['metrics-summary'] });
+  void qc.invalidateQueries({ queryKey: ctx ? ['metrics-nodes', ctx] : ['metrics-nodes'] });
+  // ctx sits deeper in these keys: snapshots key ['metrics-snapshot', kind, ctx], history keys a selector object.
+  void qc.invalidateQueries({
+    queryKey: ['metrics-snapshot'],
+    predicate: (q) => !ctx || q.queryKey[2] === ctx,
+  });
+  void qc.invalidateQueries({
+    queryKey: ['metrics-history'],
+    predicate: (q) => !ctx || (q.queryKey[1] as { ctx?: string } | undefined)?.ctx === ctx,
+  });
 }
 
 export function useInstallMetricsServer() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, body }: { ctx: string; body: MetricsServerInstallRequest }) =>
       apiFetch<MetricsServerInstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server/install`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       }),
-    onSuccess: () => invalidateMetricsServer(qc),
+    onSuccess: (_result, { ctx }) => invalidateMetricsServer(qc, ctx),
   });
 }
 
 export function useUninstallMetricsServer() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx }: { ctx: string }) =>
       apiFetch<MetricsServerUninstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/metrics-server`, { method: 'DELETE' }),
-    onSuccess: () => invalidateMetricsServer(qc),
+    onSuccess: (_result, { ctx }) => invalidateMetricsServer(qc, ctx),
   });
 }
 
@@ -793,11 +895,19 @@ export function useNetworkSummary(ctx: string) {
   });
 }
 
-export function useNetworkAgentStatus(ctx: string, opts?: { refetchMs?: number }) {
+export function useNetworkAgentStatus(ctx: string) {
+  const interval = useRefetchInterval(30_000);
   return useQuery({
     queryKey: ['network-agent-status', ctx],
     queryFn: () => apiFetch<NetworkAgentStatus>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent`),
-    refetchInterval: useRefetchInterval(opts?.refetchMs ?? 30_000),
+    // Same idea as useMetricsServerStatus: fast cadence only while the
+    // DaemonSet rollout or first traffic samples are still settling.
+    refetchInterval: (query) => {
+      if (interval === false) return false;
+      const s = query.state.data;
+      const settling = !!s?.installed && (!s.ready || !s.metricsAvailable || s.nodesReady < s.nodesDesired);
+      return settling ? Math.min(interval, 5_000) : interval;
+    },
     retry: false,
   });
 }
@@ -810,6 +920,7 @@ function invalidateNetworkAgent(qc: ReturnType<typeof useQueryClient>): void {
 export function useInstallNetworkAgent() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx }: { ctx: string }) =>
       apiFetch<NetworkAgentInstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent/install`, { method: 'POST' }),
     onSuccess: () => invalidateNetworkAgent(qc),
@@ -819,6 +930,7 @@ export function useInstallNetworkAgent() {
 export function useUninstallNetworkAgent() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx }: { ctx: string }) =>
       apiFetch<NetworkAgentUninstallResult>(`/api/contexts/${encodeURIComponent(ctx)}/network-agent`, { method: 'DELETE' }),
     onSuccess: () => invalidateNetworkAgent(qc),
@@ -830,6 +942,64 @@ export function useOverview(ctx: string) {
     queryKey: ['overview', ctx],
     queryFn: () => apiFetch<ClusterOverview>(`/api/contexts/${encodeURIComponent(ctx)}/overview`),
     refetchInterval: useRefetchInterval(10_000),
+  });
+}
+
+/** Overview sections that warm up slowly stream in behind the core payload. */
+function overviewSectionQuery(ctx: string, section: 'operators' | 'certificates', namespaces?: string[]) {
+  const key = namespaces && namespaces.length > 0 ? [...namespaces].sort().join(',') : '';
+  return {
+    queryKey: [`overview-${section}`, ctx, key],
+    path: `/api/contexts/${encodeURIComponent(ctx)}/overview/${section}${key ? `?namespaces=${encodeURIComponent(key)}` : ''}`,
+  };
+}
+
+/**
+ * Operator rollups (cert-manager, Argo, Flux…), optionally namespace-scoped.
+ * No placeholder across key changes: a namespace switch must not show the
+ * previous scope's rollups while the new scope loads.
+ */
+export function useOverviewOperators(ctx: string, namespaces?: string[]) {
+  const { queryKey, path } = overviewSectionQuery(ctx, 'operators', namespaces);
+  return useQuery({
+    queryKey,
+    queryFn: () => apiFetch<OperatorRollup[]>(path),
+    refetchInterval: useRefetchInterval(15_000),
+  });
+}
+
+/** TLS certificate expiry rollup, optionally namespace-scoped. Same no-placeholder rule as operators. */
+export function useOverviewCertificates(ctx: string, namespaces?: string[]) {
+  const { queryKey, path } = overviewSectionQuery(ctx, 'certificates', namespaces);
+  return useQuery({
+    queryKey,
+    queryFn: () => apiFetch<OverviewCertificates>(path),
+    refetchInterval: useRefetchInterval(30_000),
+  });
+}
+
+/** Live pod usage joined with requests/limits — thresholds are applied client-side. */
+export function usePodResources(ctx: string, namespace?: string) {
+  return useQuery({
+    queryKey: ['pod-resources', ctx, namespace ?? ''],
+    queryFn: () => {
+      const q = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
+      return apiFetch<PodResourcesResponse>(`/api/contexts/${encodeURIComponent(ctx)}/overview/pod-resources${q}`);
+    },
+    refetchInterval: useRefetchInterval(20_000),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Namespace-scoped overview for the global namespace selection. */
+export function useNamespaceOverview(ctx: string, namespaces: string[]) {
+  const key = [...namespaces].sort().join(',');
+  return useQuery({
+    queryKey: ['namespace-overview', ctx, key],
+    queryFn: () => apiFetch<NamespaceOverview>(`/api/contexts/${encodeURIComponent(ctx)}/namespace-overview?namespaces=${encodeURIComponent(key)}`),
+    enabled: !!ctx && namespaces.length > 0,
+    refetchInterval: useRefetchInterval(10_000),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -960,6 +1130,54 @@ export function useHelmHistory(ctx: string | undefined, ns: string | undefined, 
   });
 }
 
+export function useHelmOperations() {
+  return useQuery({
+    queryKey: ['helm-operations'],
+    queryFn: () => apiFetch<HelmOperation[]>('/api/helm/operations'),
+    refetchInterval: (query) => (query.state.data?.some((operation) => operation.status === 'running') ? 2_000 : 30_000),
+  });
+}
+
+/**
+ * One app-wide bridge from Helm progress broadcasts into React Query. The
+ * HTTP list remains the reconnect/reload source of truth.
+ */
+export function useHelmOperationEvents(): void {
+  const qc = useQueryClient();
+  useEffect(
+    () =>
+      watchClient.onBroadcast((message) => {
+        if (message.op !== 'helm-operation') return;
+        const operation = message.operation;
+        let previous: HelmOperation | undefined;
+        qc.setQueryData<HelmOperation[]>(['helm-operations'], (current) => {
+          previous = current?.find((item) => item.id === operation.id);
+          return [operation, ...(current ?? []).filter((item) => item.id !== operation.id)].toSorted((left, right) =>
+            right.startedAt.localeCompare(left.startedAt),
+          );
+        });
+
+        const revisionBecameVisible = !previous?.revision && !!operation.revision;
+        const pendingRecordBecameVisible =
+          previous?.phase !== operation.phase && !!operation.revision && (operation.phase === 'pre-hook' || operation.phase === 'applying');
+        const becameTerminal = previous?.status === 'running' && operation.status !== 'running';
+        if (revisionBecameVisible || pendingRecordBecameVisible || becameTerminal) {
+          void qc.invalidateQueries({ queryKey: ['helm-releases'] });
+          void qc.invalidateQueries({ queryKey: ['helm-release', operation.ctx, operation.namespace, operation.releaseName] });
+          void qc.invalidateQueries({ queryKey: ['helm-history', operation.ctx, operation.namespace, operation.releaseName] });
+        }
+        if (becameTerminal) {
+          if (operation.status === 'succeeded') {
+            showToast('success', `${operation.kind} completed for ${operation.namespace}/${operation.releaseName}`);
+          } else {
+            showToast('error', `${operation.kind} failed for ${operation.namespace}/${operation.releaseName} — review the Helm Releases page for recovery guidance`);
+          }
+        }
+      }),
+    [qc],
+  );
+}
+
 export function useHelmRevision(ctx: string | undefined, ns: string | undefined, name: string | undefined, revision: number | undefined) {
   return useQuery({
     queryKey: ['helm-revision', ctx, ns, name, revision],
@@ -975,26 +1193,277 @@ export function useHelmRevision(ctx: string | undefined, ns: string | undefined,
 export function useHelmUninstall() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ctx, ns, name }: { ctx: string; ns: string; name: string }) =>
-      apiFetch<{ deleted: string[]; failed: Array<{ resource: string; error: string }> }>(`/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['helm-releases'] }),
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({ ctx, ns, name, skipHooks, deleteCrds }: { ctx: string; ns: string; name: string; skipHooks?: boolean; deleteCrds?: boolean }) => {
+      const q = new URLSearchParams();
+      if (skipHooks) q.set('skipHooks', 'true');
+      if (deleteCrds) q.set('deleteCrds', 'true');
+      const qs = q.size ? `?${q.toString()}` : '';
+      return apiFetch<HelmUninstallResult>(
+        `/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}${qs}`,
+        { method: 'DELETE' },
+      );
+    },
+    onSettled: (_result, _error, { ctx, ns, name }) => {
+      void qc.invalidateQueries({ queryKey: ['helm-releases'] });
+      void qc.invalidateQueries({ queryKey: ['helm-release', ctx, ns, name] });
+      void qc.invalidateQueries({ queryKey: ['helm-history', ctx, ns, name] });
+    },
   });
 }
 
 export function useHelmRollback() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ctx, ns, name, revision }: { ctx: string; ns: string; name: string; revision: number }) =>
-      apiFetch<HelmRollbackResult>(`/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/rollback`, {
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({
+      ctx,
+      ns,
+      name,
+      revision,
+      skipHooks,
+      wait,
+      timeoutSeconds,
+    }: {
+      ctx: string;
+      ns: string;
+      name: string;
+      revision: number;
+      skipHooks?: boolean;
+      wait?: boolean;
+      timeoutSeconds?: number;
+    }) =>
+      apiFetch<HelmOperationStarted>(`/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/rollback`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ revision }),
+        body: JSON.stringify({ revision, skipHooks, wait, timeoutSeconds }),
       }),
-    onSuccess: (_r, { ctx, ns, name }) => {
-      void qc.invalidateQueries({ queryKey: ['helm-releases'] });
-      void qc.invalidateQueries({ queryKey: ['helm-release', ctx, ns, name] });
-      void qc.invalidateQueries({ queryKey: ['helm-history', ctx, ns, name] });
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['helm-operations'] }),
+  });
+}
+
+export function useAppInfo() {
+  return useQuery({
+    queryKey: ['app-info'],
+    queryFn: () => apiFetch<AppInfo>('/api/app/info'),
+    staleTime: Infinity,
+  });
+}
+
+// ---- Helm repos & charts ----
+
+export function useHelmRepos() {
+  return useQuery({
+    queryKey: ['helm-repos'],
+    queryFn: () => apiFetch<HelmRepo[]>('/api/helm/repos'),
+  });
+}
+
+// Adding/removing a repo changes which charts and versions are discoverable,
+// so refresh the catalog and the cross-repo chart-find (upgrade version list).
+function invalidateHelmRepoData(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: ['helm-repos'] });
+  void qc.invalidateQueries({ queryKey: ['helm-repo-charts'] });
+  void qc.invalidateQueries({ queryKey: ['helm-chart-find'] });
+}
+
+export function useAddHelmRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: (repo: HelmRepo) =>
+      apiFetch<HelmRepo>('/api/helm/repos', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(repo) }),
+    onSuccess: () => invalidateHelmRepoData(qc),
+  });
+}
+
+export function useRemoveHelmRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: (name: string) => apiFetch(`/api/helm/repos/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    onSuccess: () => invalidateHelmRepoData(qc),
+  });
+}
+
+export function useHelmRepoCharts(repo: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-repo-charts', repo],
+    queryFn: () => apiFetch<HelmChartSummary[]>(`/api/helm/repos/${encodeURIComponent(repo!)}/charts`),
+    enabled: !!repo,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+export function useHelmChartVersions(repo: string | undefined, chart: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-chart-versions', repo, chart],
+    queryFn: () => apiFetch<HelmChartVersion[]>(`/api/helm/repos/${encodeURIComponent(repo!)}/charts/${encodeURIComponent(chart!)}/versions`),
+    enabled: !!repo && !!chart,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+export function useHelmChartDetail(repo: string | undefined, chart: string | undefined, version: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-chart-detail', repo, chart, version],
+    queryFn: () =>
+      apiFetch<HelmChartDetail>(
+        `/api/helm/repos/${encodeURIComponent(repo!)}/charts/${encodeURIComponent(chart!)}/versions/${encodeURIComponent(version!)}/detail`,
+      ),
+    enabled: !!repo && !!chart && !!version,
+    staleTime: Infinity, // a published chart version is immutable
+  });
+}
+
+/** Exact-name search across all configured repos (upgrade-source discovery). */
+export function useHelmChartFind(chart: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-chart-find', chart],
+    queryFn: () => apiFetch<HelmChartHit[]>(`/api/helm/charts/find?name=${encodeURIComponent(chart!)}`),
+    enabled: !!chart,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+/** Batched, source-safe update hints for installed releases. */
+export function useHelmUpdates(items: HelmUpdateCheck[]) {
+  return useQuery({
+    queryKey: ['helm-updates', items],
+    queryFn: () =>
+      apiFetch<HelmChartUpdate[]>('/api/helm/updates', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items }),
+      }),
+    enabled: items.length > 0,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+/** Free-text chart search on Artifact Hub. */
+export function useHelmHubSearch(query: string) {
+  return useQuery({
+    queryKey: ['helm-hub-search', query],
+    queryFn: () => apiFetch<HelmHubChart[]>(`/api/helm/hub/search?q=${encodeURIComponent(query)}`),
+    enabled: query.trim().length >= 2,
+    staleTime: 10 * 60 * 1000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** All published versions of an Artifact Hub package. */
+export function useHelmHubVersions(repoName: string | undefined, chart: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-hub-versions', repoName, chart],
+    queryFn: () => apiFetch<{ repoUrl: string; versions: HelmChartVersion[] }>(`/api/helm/hub/versions?repo=${encodeURIComponent(repoName!)}&chart=${encodeURIComponent(chart!)}`),
+    enabled: !!repoName && !!chart,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+/** Chart metadata + default values by repository URL (Artifact Hub discoveries). */
+export function useHelmChartDetailByUrl(repoUrl: string | undefined, chart: string | undefined, version: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-chart-detail-url', repoUrl, chart, version],
+    queryFn: () =>
+      apiFetch<HelmChartDetail>(
+        `/api/helm/charts/detail?repoUrl=${encodeURIComponent(repoUrl!)}&chart=${encodeURIComponent(chart!)}&version=${encodeURIComponent(version!)}`,
+      ),
+    enabled: !!repoUrl && !!chart && !!version,
+    staleTime: Infinity, // a published chart version is immutable
+  });
+}
+
+export function useHelmOciDetail(ref: string | undefined, version: string | undefined) {
+  return useQuery({
+    queryKey: ['helm-oci-detail', ref, version],
+    queryFn: () => apiFetch<HelmChartDetail>(`/api/helm/oci/detail?ref=${encodeURIComponent(ref!)}&version=${encodeURIComponent(version!)}`),
+    enabled: !!ref && !!version,
+    staleTime: Infinity,
+  });
+}
+
+/** Chart metadata/defaults from any supported source form. */
+export function useHelmChartSourceDetail(source: HelmChartSourceRef | undefined) {
+  return useQuery({
+    queryKey: ['helm-chart-source-detail', source],
+    queryFn: () =>
+      apiFetch<HelmChartDetail>('/api/helm/charts/detail', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(source),
+      }),
+    enabled: !!source,
+    staleTime: Infinity,
+  });
+}
+
+export interface HelmUpgradeVars {
+  ctx: string;
+  ns: string;
+  name: string;
+  values: Record<string, unknown>;
+  chart?: HelmChartSourceRef;
+  skipHooks?: boolean;
+  wait?: boolean;
+  timeoutSeconds?: number;
+}
+
+export function useHelmUpgrade() {
+  const qc = useQueryClient();
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({ ctx, ns, name, ...body }: HelmUpgradeVars) =>
+      apiFetch<HelmOperationStarted>(`/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/upgrade`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body satisfies HelmUpgradeRequest),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['helm-operations'] }),
+  });
+}
+
+/** Server-side render without applying — backs the upgrade preview diff. */
+export function useHelmUpgradeDryRun() {
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({ ctx, ns, name, ...body }: HelmUpgradeVars) =>
+      apiFetch<HelmDryRunResult>(`/api/contexts/${encodeURIComponent(ctx)}/helm/releases/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/upgrade`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...body, dryRun: true } satisfies HelmUpgradeRequest),
+      }),
+  });
+}
+
+export interface HelmInstallVars extends Omit<HelmInstallRequest, 'dryRun'> {
+  ctx: string;
+}
+
+export function useHelmInstall() {
+  const qc = useQueryClient();
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({ ctx, ...body }: HelmInstallVars) =>
+      apiFetch<HelmOperationStarted>(`/api/contexts/${encodeURIComponent(ctx)}/helm/install`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body satisfies HelmInstallRequest),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['helm-operations'] }),
+  });
+}
+
+export function useHelmInstallDryRun() {
+  return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
+    mutationFn: ({ ctx, ...body }: HelmInstallVars) =>
+      apiFetch<HelmDryRunResult>(`/api/contexts/${encodeURIComponent(ctx)}/helm/install`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...body, dryRun: true } satisfies HelmInstallRequest),
+      }),
   });
 }
 
@@ -1019,6 +1488,7 @@ export function usePortForwards() {
 export function useStartPortForward() {
   const qc = useQueryClient();
   return useMutation({
+    meta: LOCAL_ERROR_HANDLING_META,
     mutationFn: ({ ctx, body }: { ctx: string; body: PortForwardRequest }) =>
       apiFetch<PortForwardInfo>(`/api/contexts/${encodeURIComponent(ctx)}/portforwards`, {
         method: 'POST',
@@ -1035,4 +1505,30 @@ export function useStopPortForward() {
     mutationFn: (id: string) => apiFetch(`/api/portforwards/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['portforwards'] }),
   });
+}
+
+export function useStopAllPortForwards() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch('/api/portforwards', { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['portforwards'] }),
+  });
+}
+
+/** RBAC preflight for pods/portforward create in a namespace. */
+export function usePortForwardPreflight(vars: { ctx: string; namespace: string } | undefined) {
+  return useQuery({
+    queryKey: ['portforward-preflight', vars?.ctx, vars?.namespace],
+    queryFn: () =>
+      apiFetch<PortForwardPreflightResponse>(
+        `/api/contexts/${encodeURIComponent(vars!.ctx)}/portforwards/preflight?namespace=${encodeURIComponent(vars!.namespace)}`,
+      ),
+    enabled: !!vars,
+    staleTime: 60_000,
+  });
+}
+
+/** Whether a local port can be bound right now (advisory — start() re-checks). */
+export function checkLocalPort(port: number): Promise<LocalPortCheckResponse> {
+  return apiFetch<LocalPortCheckResponse>(`/api/portforwards/port-check?port=${port}`);
 }

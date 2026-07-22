@@ -7,12 +7,15 @@ import Typography from '@mui/material/Typography';
 import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined';
 import { evalPrinterColumnPath, type KubeObject, type MetricsSnapshot, type PrinterColumn } from '@kubus/shared';
 import type { ClusterRow } from '../api/queries.js';
-import { AgeCell } from './AgeCell.js';
+import { AgeCell, RelativeTimeCell } from './AgeCell.js';
 import { ReadyCounter } from './ReadyCounter.js';
 import { StatusChip } from './StatusChip.js';
 import { formatBytes, formatCpu } from './format.js';
-import { dataKeyCount, eventFields, hasRunningDebugContainer, ingressHosts, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, parseQuantity, podRequestTotals, podSummary, serviceLoadBalancerAddresses, servicePorts, statusLikeName, workloadReady } from '../kube-display.js';
+import { crdStatus, crdVersions, dataKeyCount, eventFields, hasRunningDebugContainer, hpaProblems, ingressHosts, jobPhase, jobStatus, nodeAddress, nodeConditions, nodeRoles, nodeStatus, nodeTaints, ownerReference, parseQuantity, podRequestTotals, podSummary, serviceLoadBalancerAddresses, servicePorts, statusLikeName, workloadReady } from '../kube-display.js';
+import { cronHumanText, cronNextRun } from '../cron.js';
+import { useUiPrefsStore } from '../state/prefs.js';
 import { UsageMeter } from './UsageMeter.js';
+import { statusTextColor } from '../theme.js';
 
 export type MetricsLookup = (ctx: string, namespace: string | undefined, name: string) => { cpuMilli: number; memBytes: number; cpuCapacityMilli?: number; memCapacityBytes?: number } | undefined;
 export type NodeAllocationLookup = (ctx: string, nodeName: string) => NodeAllocationSummary;
@@ -100,7 +103,12 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     headerName: 'Ready',
     width: 75,
     valueGetter: (_v, row) => podSummary(obj(row)).ready,
-    renderCell: (params) => <ReadyCounter value={String(params.value ?? '')} />,
+    renderCell: (params) => (
+      <ReadyCounter
+        value={String(params.value ?? '')}
+        muted={/^(succeeded|completed)$/i.test(podSummary(obj(params.row)).status)}
+      />
+    ),
   }),
   podStatus: () => ({
     field: 'podStatus',
@@ -287,6 +295,13 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     width: 75,
     valueGetter: (_v, row) => ((obj(row).status as { numberReady?: number })?.numberReady ?? 0).toString(),
   }),
+  jobStatus: () => ({
+    field: 'jobStatus',
+    headerName: 'Status',
+    width: 100,
+    valueGetter: (_v, row) => jobPhase(obj(row)),
+    renderCell: (params) => <StatusChip status={String(params.value ?? '')} />,
+  }),
   jobCompletions: () => ({
     field: 'jobCompletions',
     headerName: 'Completions',
@@ -299,11 +314,43 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     width: 90,
     valueGetter: (_v, row) => jobStatus(obj(row)).duration,
   }),
+  jobOwner: () => ({
+    field: 'jobOwner',
+    headerName: 'Owner',
+    width: 170,
+    valueGetter: (_v, row) => {
+      const ref = ownerReference(obj(row));
+      return ref ? `${ref.kind}/${ref.name}` : '';
+    },
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
   cronSchedule: () => ({
     field: 'cronSchedule',
     headerName: 'Schedule',
-    width: 110,
+    width: 150,
     valueGetter: (_v, row) => (obj(row).spec as { schedule?: string })?.schedule ?? '',
+    renderCell: (params) => <ScheduleCell spec={obj(params.row).spec as { schedule?: string; timeZone?: string } | undefined} />,
+  }),
+  cronNextRun: () => ({
+    field: 'cronNextRun',
+    headerName: 'Next run',
+    width: 95,
+    type: 'number',
+    headerAlign: 'left',
+    align: 'left',
+    valueGetter: (_v, row) => {
+      const spec = obj(row).spec as { schedule?: string; suspend?: boolean; timeZone?: string } | undefined;
+      if (!spec?.schedule || spec.suspend) return null;
+      return cronNextRun(spec.schedule, spec.timeZone)?.getTime() ?? null;
+    },
+    renderCell: (params) =>
+      typeof params.value === 'number' ? (
+        <RelativeTimeCell timestamp={new Date(params.value).toISOString()} />
+      ) : (
+        <Typography variant="body2" color="text.disabled">
+          —
+        </Typography>
+      ),
   }),
   cronSuspend: () => ({
     field: 'cronSuspend',
@@ -479,6 +526,49 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     valueGetter: (_v, row) => nodeConditions(obj(row)),
     renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
   }),
+  nodeProviderID: () => ({
+    field: 'nodeProviderID',
+    headerName: 'Provider ID',
+    width: 220,
+    valueGetter: (_v, row) => ((obj(row).spec as { providerID?: string })?.providerID ?? ''),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  crdKind: () => ({
+    field: 'crdKind',
+    headerName: 'Kind',
+    flex: 1,
+    minWidth: 160,
+    valueGetter: (_v, row) => (obj(row).spec as { names?: { kind?: string } })?.names?.kind ?? '',
+  }),
+  crdGroup: () => ({
+    field: 'crdGroup',
+    headerName: 'Group',
+    flex: 1,
+    minWidth: 170,
+    valueGetter: (_v, row) => (obj(row).spec as { group?: string })?.group ?? '',
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  crdScope: () => ({
+    field: 'crdScope',
+    headerName: 'Scope',
+    width: 105,
+    valueGetter: (_v, row) => (obj(row).spec as { scope?: string })?.scope ?? '',
+  }),
+  crdVersions: () => ({
+    field: 'crdVersions',
+    headerName: 'Versions',
+    description: 'Served versions; * marks the storage version',
+    width: 120,
+    valueGetter: (_v, row) => crdVersions(obj(row)),
+    renderCell: (params) => <TextCell value={String(params.value ?? '')} />,
+  }),
+  crdStatus: () => ({
+    field: 'crdStatus',
+    headerName: 'Status',
+    width: 105,
+    valueGetter: (_v, row) => crdStatus(obj(row)),
+    renderCell: (params) => <StatusChip status={String(params.value ?? '')} />,
+  }),
   nsStatus: () => ({
     field: 'nsStatus',
     headerName: 'Status',
@@ -491,7 +581,7 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     headerName: 'Type',
     width: 90,
     valueGetter: (_v, row) => eventFields(obj(row)).type,
-    renderCell: (params) => <StatusChip status={eventFields(obj(params.row)).type === 'Warning' ? 'Error' : 'Ready'} />,
+    renderCell: (params) => <StatusChip status={eventFields(obj(params.row)).type ?? ''} />,
   }),
   eventReason: () => ({
     field: 'eventReason',
@@ -550,6 +640,27 @@ const COLUMN_DEFS: Record<string, (opts: ColumnBuildOptions) => Col> = {
     headerName: 'Replicas',
     width: 80,
     valueGetter: (_v, row) => ((obj(row).status as { currentReplicas?: number })?.currentReplicas ?? 0).toString(),
+  }),
+  hpaConditions: () => ({
+    field: 'hpaConditions',
+    headerName: 'Conditions',
+    flex: 1,
+    minWidth: 160,
+    valueGetter: (_v, row) => hpaProblems(obj(row)),
+    renderCell: (params) => {
+      const text = String(params.value ?? '');
+      return text ? (
+        <Tooltip title={text}>
+          <Typography variant="body2" noWrap sx={{ minWidth: 0, color: statusTextColor('warning') }}>
+            {text}
+          </Typography>
+        </Tooltip>
+      ) : (
+        <Typography variant="body2" color="text.disabled">
+          —
+        </Typography>
+      );
+    },
   }),
 };
 
@@ -619,6 +730,35 @@ function LabelsCell({ labels, onLabelClick }: { labels?: Record<string, string>;
         {visible.map(chip)}
         {overflow > 0 && <Chip label={`+${overflow}`} size="small" sx={{ height: 20, fontSize: 11, flexShrink: 0 }} />}
       </Box>
+    </Tooltip>
+  );
+}
+
+/**
+ * CronJob schedule, shown as the cron expression or its human-readable text.
+ * Clicking flips the (persisted) preference for every schedule cell at once.
+ */
+function ScheduleCell({ spec }: { spec?: { schedule?: string; timeZone?: string } }) {
+  const human = useUiPrefsStore((s) => s.cronHumanSchedule);
+  const schedule = spec?.schedule ?? '';
+  if (!schedule) return null;
+  const humanText = cronHumanText(schedule);
+  const shown = human && humanText ? humanText : schedule;
+  const alt = human && humanText ? schedule : humanText;
+  const hint = [alt, spec?.timeZone, 'click to toggle'].filter(Boolean).join(' — ');
+  return (
+    <Tooltip title={hint}>
+      <Typography
+        variant="body2"
+        noWrap
+        onClick={(event) => {
+          event.stopPropagation();
+          useUiPrefsStore.getState().set({ cronHumanSchedule: !human });
+        }}
+        sx={{ cursor: 'pointer', minWidth: 0 }}
+      >
+        {shown}
+      </Typography>
     </Tooltip>
   );
 }

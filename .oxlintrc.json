@@ -22,9 +22,11 @@
     {
       // These modal surfaces intentionally move focus to their primary control.
       "files": [
+        "client/src/components/BatchCreateDialog.tsx",
         "client/src/components/ConfirmDialog.tsx",
         "client/src/components/FileCopyDialog.tsx",
         "client/src/components/RowActions.tsx",
+        "client/src/layout/ClusterSwitcher.tsx",
         "client/src/layout/SearchDialog.tsx"
       ],
       "rules": {

@@ -2,68 +2,30 @@ import { X509Certificate } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { KubeObject, LogTargetKind, LogTargetPodsResponse, PodEnvResponse, SecretTlsResponse, TlsCertInfo } from '@kubus/shared';
 import type { AppContext } from '../app.js';
-import type { ClusterHandle } from '../kube/cluster-manager.js';
 import { podContainers } from '../kube/actions.js';
 import { getRolloutHistory } from '../kube/rollout.js';
 import { resolvePodEnv } from '../kube/pod-env.js';
 import { resourcePath } from '../kube/raw-client.js';
+import { resolveTargetPods } from '../kube/target-pods.js';
 import { HttpProblem, sendError } from '../util/errors.js';
-
-interface LabelSelector {
-  matchLabels?: Record<string, string>;
-  matchExpressions?: Array<{ key: string; operator: 'In' | 'NotIn' | 'Exists' | 'DoesNotExist'; values?: string[] }>;
-}
 
 const CERT_BLOCK_RE = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
 
-function selectorToString(selector: LabelSelector | undefined): string | undefined {
-  if (!selector) return undefined;
-  const parts = Object.entries(selector.matchLabels ?? {}).map(([k, v]) => `${k}=${v}`);
-  for (const expr of selector.matchExpressions ?? []) {
-    if (expr.operator === 'In') parts.push(`${expr.key} in (${(expr.values ?? []).join(',')})`);
-    else if (expr.operator === 'NotIn') parts.push(`${expr.key} notin (${(expr.values ?? []).join(',')})`);
-    else if (expr.operator === 'Exists') parts.push(expr.key);
-    else if (expr.operator === 'DoesNotExist') parts.push(`!${expr.key}`);
+/** Secret data keys that may hold public certificate chains. */
+const TLS_CERT_KEYS = ['tls.crt', 'ca.crt', 'ca.tls'];
+
+function publicKeyAlgorithm(cert: X509Certificate): string | undefined {
+  try {
+    const key = cert.publicKey;
+    const details = key.asymmetricKeyDetails;
+    if (key.asymmetricKeyType === 'rsa' || key.asymmetricKeyType === 'rsa-pss') {
+      return details?.modulusLength ? `RSA ${details.modulusLength}` : 'RSA';
+    }
+    if (key.asymmetricKeyType === 'ec') return details?.namedCurve ? `ECDSA ${details.namedCurve}` : 'ECDSA';
+    return key.asymmetricKeyType?.toUpperCase();
+  } catch {
+    return undefined;
   }
-  return parts.length ? parts.join(',') : undefined;
-}
-
-async function listPods(handle: ClusterHandle, namespace: string, selector?: string): Promise<KubeObject[]> {
-  const query = new URLSearchParams();
-  if (selector) query.set('labelSelector', selector);
-  const list = await handle.raw.json<{ items?: KubeObject[] }>(resourcePath('', 'v1', 'pods', { namespace, query }));
-  return list.items ?? [];
-}
-
-function owns(obj: KubeObject, uid: string | undefined): boolean {
-  if (!uid) return false;
-  return (obj.metadata.ownerReferences ?? []).some((owner) => owner.uid === uid && owner.controller);
-}
-
-async function resolveLogTargetPods(handle: ClusterHandle, target: KubeObject, kind: LogTargetKind, namespace: string): Promise<KubeObject[]> {
-  if (kind === 'Pod') return [target];
-
-  if (kind === 'Service') {
-    const selector = (target.spec as { selector?: Record<string, string> } | undefined)?.selector;
-    const labelSelector = selectorToString({ matchLabels: selector });
-    return labelSelector ? listPods(handle, namespace, labelSelector) : [];
-  }
-
-  const selector = selectorToString((target.spec as { selector?: LabelSelector } | undefined)?.selector);
-  if (!selector) return [];
-
-  if (kind === 'Deployment') {
-    const query = new URLSearchParams({ labelSelector: selector });
-    const [rsList, pods] = await Promise.all([
-      handle.raw.json<{ items?: KubeObject[] }>(resourcePath('apps', 'v1', 'replicasets', { namespace, query })),
-      listPods(handle, namespace, selector),
-    ]);
-    const rsUids = new Set((rsList.items ?? []).filter((rs) => owns(rs, target.metadata.uid)).map((rs) => rs.metadata.uid));
-    return pods.filter((pod) => (pod.metadata.ownerReferences ?? []).some((owner) => rsUids.has(owner.uid) && owner.controller));
-  }
-
-  const pods = await listPods(handle, namespace, selector);
-  return pods.filter((pod) => owns(pod, target.metadata.uid));
 }
 
 export function registerDetailRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -92,7 +54,7 @@ export function registerDetailRoutes(app: FastifyInstance, ctx: AppContext): voi
       if (!version || !plural || !kind || !namespace || !name) throw new HttpProblem(422, 'group, version, plural, kind, namespace and name are required');
       const handle = ctx.clusters.get(req.params.ctx);
       const target = await handle.raw.json<KubeObject>(resourcePath(group, version, plural, { namespace, name }));
-      const pods = await resolveLogTargetPods(handle, target, kind, namespace);
+      const pods = await resolveTargetPods(handle, target, kind, namespace);
       const response: LogTargetPodsResponse = {
         pods: pods
           .map((pod) => ({
@@ -115,7 +77,7 @@ export function registerDetailRoutes(app: FastifyInstance, ctx: AppContext): voi
       try {
         const { kind, namespace, name } = req.query;
         if (!kind || !namespace || !name) throw new HttpProblem(422, 'kind, namespace and name are required');
-        if (kind !== 'Deployment' && kind !== 'StatefulSet') throw new HttpProblem(422, 'kind must be Deployment or StatefulSet');
+        if (kind !== 'Deployment' && kind !== 'StatefulSet' && kind !== 'DaemonSet') throw new HttpProblem(422, 'kind must be Deployment, StatefulSet or DaemonSet');
         const handle = ctx.clusters.get(req.params.ctx);
         return await getRolloutHistory(handle, kind, namespace, name);
       } catch (err) {
@@ -134,24 +96,38 @@ export function registerDetailRoutes(app: FastifyInstance, ctx: AppContext): voi
         const handle = ctx.clusters.get(req.params.ctx);
         const secret = await handle.raw.json<KubeObject>(resourcePath('', 'v1', 'secrets', { namespace, name }));
         if (secret.type !== 'kubernetes.io/tls') throw new HttpProblem(422, 'secret is not of type kubernetes.io/tls');
-        const crt = (secret.data as Record<string, string> | undefined)?.['tls.crt'];
-        if (!crt) throw new HttpProblem(422, 'secret has no tls.crt');
-        // Only the public certificate chain is parsed; tls.key is never read.
-        const pem = Buffer.from(crt, 'base64').toString('utf8');
-        const blocks = pem.match(CERT_BLOCK_RE) ?? [];
-        const certificates: TlsCertInfo[] = blocks.map((block) => {
-          const cert = new X509Certificate(block);
-          return {
-            subject: cert.subject,
-            issuer: cert.issuer,
-            serialNumber: cert.serialNumber,
-            notBefore: new Date(cert.validFrom).toISOString(),
-            notAfter: new Date(cert.validTo).toISOString(),
-            sans: cert.subjectAltName ? cert.subjectAltName.split(',').map((s) => s.trim()) : [],
-            isCA: cert.ca,
-            selfSigned: cert.subject === cert.issuer,
-          };
-        });
+        const data = secret.data as Record<string, string> | undefined;
+        if (!data?.['tls.crt']) throw new HttpProblem(422, 'secret has no tls.crt');
+        // Only public certificate chains are parsed; tls.key is never read.
+        // Additional CA entries (ca.crt, or ca.tls as some tools write) ride along.
+        const certificates: TlsCertInfo[] = [];
+        for (const key of TLS_CERT_KEYS) {
+          const encoded = data[key];
+          if (!encoded) continue;
+          const pem = Buffer.from(encoded, 'base64').toString('utf8');
+          for (const block of pem.match(CERT_BLOCK_RE) ?? []) {
+            let cert: X509Certificate;
+            try {
+              cert = new X509Certificate(block);
+            } catch {
+              // A malformed block (often a hand-edited ca.crt) must not hide
+              // the certificates that did parse.
+              continue;
+            }
+            certificates.push({
+              subject: cert.subject,
+              issuer: cert.issuer,
+              serialNumber: cert.serialNumber,
+              notBefore: new Date(cert.validFrom).toISOString(),
+              notAfter: new Date(cert.validTo).toISOString(),
+              sans: cert.subjectAltName ? cert.subjectAltName.split(',').map((s) => s.trim()) : [],
+              isCA: cert.ca,
+              selfSigned: cert.subject === cert.issuer,
+              publicKeyAlgorithm: publicKeyAlgorithm(cert),
+              source: key,
+            });
+          }
+        }
         const response: SecretTlsResponse = { certificates };
         return response;
       } catch (err) {

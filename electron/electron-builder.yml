@@ -11,10 +11,15 @@ asar: true
 extraResources:
   - from: ../client/dist
     to: client
+  - from: ../server/assets/helm-engine.wasm.gz
+    to: helm-engine.wasm.gz
   - from: build/icons/256x256.png
     to: icon.png
 icon: build/icon.png
 artifactName: kubus-${version}-${os}-${arch}.${ext}
+protocols:
+  - name: Kubus
+    schemes: [kubus]
 npmRebuild: false
 afterPack: scripts/after-pack.cjs
 win:

@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { layout } from '../theme.js';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Menu from '@mui/material/Menu';
@@ -10,8 +11,10 @@ import CloseIcon from '@mui/icons-material/Close';
 import { useLocation, useNavigate } from 'react-router';
 import { useTabsStore } from '../state/tabs.js';
 import { useClustersStore } from '../state/clusters.js';
+import { applySavedViewGridState } from '../state/saved-view.js';
 import { useApiResourcesForContexts } from '../api/queries.js';
 import { tabMeta } from './tab-meta.js';
+import { TruncationTooltip } from '../components/truncation.js';
 
 // Electron always starts at '/'; on the first mount we reopen the tab the user
 // left active. Module-scoped so StrictMode's double effect doesn't re-restore.
@@ -25,12 +28,21 @@ export const TabsBar = memo(function TabsBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const current = location.pathname + location.search;
+  const activeTab = tabs.find((tab) => tab.id === activeId);
 
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const dragIndexRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeTabRef = useRef<HTMLDivElement>(null);
+
+  // A background saved-view tab carries its snapshot without touching the
+  // visible page. Consume it exactly once when that tab becomes active.
+  useLayoutEffect(() => {
+    if (!activeId || !activeTab?.pendingSavedView) return;
+    applySavedViewGridState(activeTab.path, activeTab.pendingSavedView);
+    useTabsStore.getState().clearPendingSavedView(activeId);
+  }, [activeId, activeTab?.path, activeTab?.pendingSavedView]);
 
   // Router → store: the active tab always mirrors the current location, so
   // in-page navigation (filters, detail deep links, drill-downs) is captured.
@@ -72,7 +84,7 @@ export const TabsBar = memo(function TabsBar() {
         flexShrink: 0,
         borderBottom: 1,
         borderColor: 'divider',
-        bgcolor: (theme) => (theme.palette.mode === 'dark' ? '#151518' : '#f4f4f5'),
+        bgcolor: (theme) => theme.palette.sidebar,
       }}
     >
       <Box
@@ -119,6 +131,24 @@ export const TabsBar = memo(function TabsBar() {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   act(() => useTabsStore.getState().setActive(tab.id));
+                  return;
+                }
+                if (e.key === 'Delete') {
+                  e.preventDefault();
+                  closeTab(tab.id);
+                  // The focused element is gone; keep keyboard flow on the strip.
+                  requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus());
+                  return;
+                }
+                // Roving focus per the ARIA tabs pattern: arrows move focus
+                // (with wrap-around), Enter/Space activates.
+                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'Home' || e.key === 'End') {
+                  e.preventDefault();
+                  const els = [...(scrollRef.current?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
+                  const i = els.indexOf(e.currentTarget as HTMLElement);
+                  const to =
+                    e.key === 'Home' ? 0 : e.key === 'End' ? els.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + els.length) % els.length;
+                  els[to]?.focus();
                 }
               }}
               onAuxClick={(e) => {
@@ -138,8 +168,8 @@ export const TabsBar = memo(function TabsBar() {
                 pl: 1.25,
                 pr: 0.75,
                 // Explicit width (not flex-basis) so the shrink-to-fit tablist
-                // sizes to n×190 and only squeezes tabs once the bar is full.
-                width: 190,
+                // sizes to n×tabWidth and only squeezes tabs once the bar is full.
+                width: layout.tabWidth,
                 minWidth: 100,
                 flexShrink: 1,
                 borderRight: 1,
@@ -154,9 +184,11 @@ export const TabsBar = memo(function TabsBar() {
               }}
             >
               <Box sx={{ display: 'flex', color: 'text.secondary', '& svg': { fontSize: 15 } }}>{meta.icon}</Box>
-              <Typography variant="body2" noWrap sx={{ flex: 1, fontSize: 12.5 }}>
-                {meta.title}
-              </Typography>
+              <TruncationTooltip text={meta.title}>
+                <Typography variant="body2" noWrap sx={{ flex: 1, fontSize: 12.5 }}>
+                  {meta.title}
+                </Typography>
+              </TruncationTooltip>
               <IconButton
                 className="tab-close"
                 size="small"

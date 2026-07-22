@@ -1,17 +1,18 @@
 import { useCallback } from 'react';
-import { gvkForResource, type KubeObject, type ResourceRef } from '@kubus/shared';
+import { gvkForResource, type KubeObject, type LogTargetKind, type ResourceRef } from '@kubus/shared';
 import {
   resolveLogTargetPods,
   useCordon,
+  useCreateResource,
   useRerunJob,
   useRolloutRestart,
   useSuspendCronJob,
-  useTriggerCronJob,
 } from '../api/queries.js';
 import { apiFetch } from '../api/http.js';
 import { resourceUrl } from '../api/queries.js';
 import { useDockStore, dockTabId } from '../state/dock.js';
 import { podContainerNames } from '../kube-display.js';
+import { manualJobYaml } from '../manual-job.js';
 
 /**
  * Palette actions for a resource. `run` actions execute immediately and
@@ -53,7 +54,7 @@ export function actionsForRef(ref: ResourceRef): PaletteAction[] {
     case 'CronJob':
       return [OPEN, TRIGGER, SUSPEND, MORE];
     case 'Job':
-      return [OPEN, RERUN, MORE];
+      return [OPEN, LOGS, RERUN, MORE];
     case 'Node':
       return [OPEN, CORDON, MORE];
     default:
@@ -64,7 +65,7 @@ export function actionsForRef(ref: ResourceRef): PaletteAction[] {
 /** Execute a `run` palette action; resolves to a toast message. */
 export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) => Promise<string> {
   const restart = useRolloutRestart();
-  const trigger = useTriggerCronJob();
+  const create = useCreateResource();
   const rerun = useRerunJob();
   const suspendCj = useSuspendCronJob();
   const cordon = useCordon();
@@ -76,15 +77,17 @@ export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) =>
       const fetchObj = () => apiFetch<KubeObject>(resourceUrl(ref.ctx, ref.group, ref.version, ref.plural, ref.name, ref.namespace));
       switch (action.id) {
         case 'logs': {
-          const { pods } = await resolveLogTargetPods({ ctx: ref.ctx, group: ref.group, version: ref.version, plural: ref.plural, kind: ref.kind as 'Pod', namespace, name: ref.name });
+          const logKind = ref.kind as LogTargetKind;
+          const { pods } = await resolveLogTargetPods({ ctx: ref.ctx, group: ref.group, version: ref.version, plural: ref.plural, kind: logKind, namespace, name: ref.name });
           if (!pods.length) throw new Error(`No pods found for ${ref.kind} ${namespace}/${ref.name}`);
-          const byNamespace = new Map<string, string[]>();
+          const byNamespace = new Map<string, typeof pods>();
           for (const pod of pods) {
-            const names = byNamespace.get(pod.namespace);
-            if (names) names.push(pod.name);
-            else byNamespace.set(pod.namespace, [pod.name]);
+            const namespacePods = byNamespace.get(pod.namespace);
+            if (namespacePods) namespacePods.push(pod);
+            else byNamespace.set(pod.namespace, [pod]);
           }
-          for (const [ns, podNames] of byNamespace) {
+          for (const [ns, namespacePods] of byNamespace) {
+            const podNames = namespacePods.map((pod) => pod.name);
             addTab({
               kind: 'logs',
               id: dockTabId(),
@@ -92,6 +95,8 @@ export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) =>
               ctx: ref.ctx,
               namespace: ns,
               pods: podNames,
+              sources: namespacePods.map((pod) => ({ pod: pod.name, containers: pod.containers })),
+              target: { kind: logKind, name: ref.name },
               follow: true,
             });
           }
@@ -107,8 +112,10 @@ export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) =>
           await restart.mutateAsync({ ctx: ref.ctx, body: { kind: ref.kind as 'Deployment', namespace, name: ref.name } });
           return `Rollout restart triggered for ${ref.name}`;
         case 'trigger': {
-          const r = await trigger.mutateAsync({ ctx: ref.ctx, body: { namespace, name: ref.name } });
-          return `Created job ${r.jobName}`;
+          // The palette triggers immediately; the row menu's dialog is where YAML review lives.
+          const obj = await fetchObj();
+          const created = await create.mutateAsync({ ctx: ref.ctx, yamlBody: manualJobYaml(obj) });
+          return `Created job ${created.metadata.name}`;
         }
         case 'rerun': {
           const r = await rerun.mutateAsync({ ctx: ref.ctx, body: { namespace, name: ref.name } });
@@ -130,6 +137,6 @@ export function usePaletteRunner(): (action: PaletteAction, ref: ResourceRef) =>
           throw new Error(`unknown palette action ${action.id}`);
       }
     },
-    [restart, trigger, rerun, suspendCj, cordon, addTab],
+    [restart, create, rerun, suspendCj, cordon, addTab],
   );
 }
